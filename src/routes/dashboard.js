@@ -1,0 +1,49 @@
+import { Router } from 'express';
+import db from '../lib/db.js';
+import { requireAuth, denySuperadmin } from '../lib/auth.js';
+
+const r = Router();
+
+// Poids en temps réel (public aux utilisateurs connectés — commun à tous)
+r.get('/live', requireAuth, (req, res) => {
+  const l = db.prepare(`SELECT * FROM live WHERE id = 1`).get();
+  res.json({
+    connected: !!l.connected, stable: !!l.stable,
+    kg: l.kg, valeur: l.valeur, unite: l.unite, ts: l.ts
+  });
+});
+
+// Dashboard mGlobal COMMUN (mêmes chiffres globaux pour les distributeurs).
+// Interdit au super-admin (pas d'accès aux données des distributeurs).
+r.get('/global', requireAuth, denySuperadmin, (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const month = today.slice(0, 7);
+  const year = today.slice(0, 4);
+
+  const jour = db.prepare(`SELECT COUNT(*) nb, COALESCE(SUM(poids_net),0) t
+    FROM sorties WHERE substr(date_sortie,1,10)=?`).get(today);
+  const mois = db.prepare(`SELECT COUNT(*) nb, COALESCE(SUM(poids_net),0) t
+    FROM sorties WHERE substr(date_sortie,1,7)=?`).get(month);
+  const annee = db.prepare(`SELECT COUNT(*) nb, COALESCE(SUM(poids_net),0) t
+    FROM sorties WHERE substr(date_sortie,1,4)=?`).get(year);
+
+  const parDistributeur = db.prepare(`
+    SELECT d.nom AS distributeur, COUNT(*) AS nbBons, ROUND(SUM(s.poids_net),3) AS totalTonnes
+    FROM sorties s JOIN distributeurs d ON d.id = s.distributeur_id
+    GROUP BY d.id ORDER BY totalTonnes DESC`).all();
+
+  const parMois = db.prepare(`
+    SELECT substr(date_sortie,1,7) AS mois, ROUND(SUM(poids_net),3) AS total
+    FROM sorties WHERE substr(date_sortie,1,4)=?
+    GROUP BY mois ORDER BY mois`).all(year);
+
+  res.json({
+    jour: { nbCamions: jour.nb, totalTonnes: round(jour.t) },
+    mois: { nbCamions: mois.nb, totalTonnes: round(mois.t) },
+    annee: { nbCamions: annee.nb, totalTonnes: round(annee.t) },
+    parDistributeur, parMois
+  });
+});
+
+const round = (v) => Math.round(v * 1000) / 1000;
+export default r;
