@@ -834,8 +834,16 @@ async function pageAdmin() {
     <div class="panel"><h3>Distributeurs (espaces)</h3>
       <div class="filters"><input id="dNom" placeholder="Nom du distributeur">
         <button class="btn sec" id="dAdd">Créer l'espace</button></div>
-      <div id="dTable"><div class="hint">Chargement…</div></div></div>`;
+      <div id="dTable"><div class="hint">Chargement…</div></div></div>
+    <div class="panel"><h3>Mon mot de passe (super-admin)</h3>
+      <div class="hint">Modifiez le mot de passe du compte super-admin mGlobal.</div>
+      <div class="filters" style="margin-top:10px">
+        <input id="pwCur" type="password" placeholder="Mot de passe actuel">
+        <input id="pwNew" type="password" placeholder="Nouveau mot de passe (min. 6)">
+        <input id="pwConf" type="password" placeholder="Confirmer le nouveau">
+        <button class="btn sec" id="pwSave">Modifier</button></div></div>`;
   $('platUrl').textContent = location.origin;
+  $('pwSave').onclick = changePassword;
   $('dAdd').onclick = async () => {
     try { await api('/admin/distributeurs', { method: 'POST', body: JSON.stringify({ nom: $('dNom').value }) });
       toast('Espace créé'); $('dNom').value = ''; loadDistribs(); }
@@ -891,6 +899,18 @@ window.setDistrib = async (id, champ, val) => {
     toast('Distributeur mis à jour'); loadDistribs(); }
   catch (e) { toast(e.message, true); }
 };
+
+async function changePassword() {
+  const current = $('pwCur').value, nouveau = $('pwNew').value, conf = $('pwConf').value;
+  if (!current || !nouveau) return toast('Renseignez le mot de passe actuel et le nouveau', true);
+  if (nouveau.length < 6) return toast('Le nouveau mot de passe doit faire au moins 6 caractères', true);
+  if (nouveau !== conf) return toast('La confirmation ne correspond pas', true);
+  try {
+    await api('/auth/password', { method: 'POST', body: JSON.stringify({ current, nouveau }) });
+    toast('Mot de passe modifié');
+    $('pwCur').value = $('pwNew').value = $('pwConf').value = '';
+  } catch (e) { toast(e.message, true); }
+}
 
 /* ───────────── Démarrage ───────────── */
 (async function init() {

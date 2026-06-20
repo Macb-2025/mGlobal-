@@ -315,9 +315,10 @@ function backfillBons() {
 
 // ── Amorçage : super-admin mGlobal + site par défaut ──
 function seed() {
-  // Garantit que le super-admin configuré (mGlobal / mGlobal2026) existe TOUJOURS,
-  // même sur une base déjà créée avec un ancien super-admin : on le crée s'il manque
-  // et on (re)applique le mot de passe défini par les variables d'environnement.
+  // Garantit que le super-admin existe TOUJOURS. À la création, on applique le mot
+  // de passe par défaut. Sur une base existante on ne touche PLUS au mot de passe
+  // (le super-admin peut le modifier dans l'app), SAUF si SUPERADMIN_PASSWORD est
+  // explicitement défini en variable d'environnement (réinitialisation volontaire).
   const user = process.env.SUPERADMIN_USER || 'mGlobal';
   const pass = process.env.SUPERADMIN_PASSWORD || 'mGlobal2026';
   const existing = db.prepare(`SELECT id FROM users WHERE username = ?`).get(user);
@@ -326,10 +327,13 @@ function seed() {
                 VALUES (NULL, ?, ?, ?, 'superadmin')`)
       .run(user, bcrypt.hashSync(pass, 10), 'Administrateur mGlobal');
     console.log(`[seed] Super-admin créé : ${user} / ${pass}`);
-  } else {
+  } else if (process.env.SUPERADMIN_PASSWORD) {
     db.prepare(`UPDATE users SET role='superadmin', distributeur_id=NULL, actif=1,
                 password_hash=? WHERE id=?`).run(bcrypt.hashSync(pass, 10), existing.id);
-    console.log(`[seed] Super-admin ${user} vérifié (mot de passe réappliqué)`);
+    console.log(`[seed] Super-admin ${user} : mot de passe réinitialisé via SUPERADMIN_PASSWORD`);
+  } else {
+    db.prepare(`UPDATE users SET role='superadmin', distributeur_id=NULL, actif=1 WHERE id=?`).run(existing.id);
+    console.log(`[seed] Super-admin ${user} vérifié`);
   }
   const siteExists = db.prepare(`SELECT COUNT(*) n FROM sites`).get().n;
   if (!siteExists) {
