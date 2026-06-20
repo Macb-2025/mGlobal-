@@ -18,7 +18,7 @@ ENV DATA_DIR=/data
 VOLUME ["/data"]
 
 ENV NODE_ENV=production
-ENV PORT=4000
-EXPOSE 4000
+ENV PORT=3060
+EXPOSE 3060
 
 CMD ["node", "src/server.js"]

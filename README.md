@@ -46,7 +46,7 @@ Au premier démarrage, la console affiche :
 [seed] Site créé. CLÉ DE LIAISON (à coller dans mGlobal) : XXXXXXXXXXXX
 ```
 
-Ouvrez ensuite **http://localhost:4000** et connectez-vous avec `mGlobal / mGlobal2026`.
+Ouvrez ensuite **http://localhost:3060** et connectez-vous avec `mGlobal / mGlobal2026`.
 
 ---
 
@@ -77,7 +77,7 @@ Choisissez **une** des options ci-dessous.
 
    ```
    pesage.mondomaine.com {
-       reverse_proxy localhost:4000
+       reverse_proxy localhost:3060
    }
    ```
 
@@ -99,8 +99,8 @@ Choisissez **une** des options ci-dessous.
 ### Option C — Tunnel sécurisé (test immédiat, sans serveur)
 
 ```bash
-npm start                                  # plateforme locale sur :4000
-cloudflared tunnel --url http://localhost:4000
+npm start                                  # plateforme locale sur :3060
+cloudflared tunnel --url http://localhost:3060
 ```
 
 Cloudflare renvoie une URL publique `https://xxxx.trycloudflare.com` utilisable partout

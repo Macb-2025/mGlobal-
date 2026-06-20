@@ -70,7 +70,7 @@ docker compose up -d --build
 docker compose logs -f     # note la "CLÉ DE LIAISON" affichée (Ctrl+C pour quitter les logs)
 ```
 
-La plateforme tourne en interne sur le port 4000. Reste à mettre le HTTPS devant.
+La plateforme tourne en interne sur le port 3060. Reste à mettre le HTTPS devant.
 
 ### A.5 — Reverse proxy HTTPS automatique (Caddy)
 Caddy obtient et renouvelle le certificat Let's Encrypt tout seul.
@@ -84,7 +84,7 @@ Mets exactement ceci (remplace le domaine) :
 
 ```
 pesage.tondomaine.com {
-    reverse_proxy localhost:4000
+    reverse_proxy localhost:3060
 }
 ```
 
@@ -113,7 +113,7 @@ sudo ufw allow 22
 5. Dans les **Variables d'environnement**, ajoute :
    - `JWT_SECRET` = (ta chaîne aléatoire)
    - `SUPERADMIN_PASSWORD` = (ton mot de passe)
-   - `PORT` = `4000`
+   - `PORT` = `3060`
    - `DATA_DIR` = `/data`
 6. Le fournisseur te donne une **URL HTTPS publique** (ex. `https://mglobal-cloud.up.railway.app`).
    La clé de liaison est visible dans les **logs** du service (ou dans la plateforme → Administration).
@@ -127,7 +127,7 @@ Sur le PC où tourne la plateforme :
 ```bash
 cd cloud
 npm install
-npm start            # plateforme locale sur http://localhost:4000
+npm start            # plateforme locale sur http://localhost:3060
 ```
 
 Dans un autre terminal :
@@ -135,7 +135,7 @@ Dans un autre terminal :
 ```bash
 # installer cloudflared une seule fois
 # (https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
-cloudflared tunnel --url http://localhost:4000
+cloudflared tunnel --url http://localhost:3060
 ```
 
 Cloudflare affiche une URL du type `https://xxxx-yyyy.trycloudflare.com` — utilisable

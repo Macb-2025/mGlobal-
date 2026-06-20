@@ -43,7 +43,7 @@ app.use((err, _req, res, _next) => {
   res.status(err.status || 500).json({ error: err.message || 'Erreur serveur' });
 });
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 3060;
 const server = http.createServer(app);
 initRealtime(server); // WebSocket temps réel (/ws)
 

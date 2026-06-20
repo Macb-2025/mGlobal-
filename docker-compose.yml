@@ -4,14 +4,14 @@ services:
     container_name: mglobal-cloud
     restart: unless-stopped
     ports:
-      - "4000:4000"
+      - "3060:3060"
     environment:
       # ⚠ À PERSONNALISER avant la mise en production
       - JWT_SECRET=${JWT_SECRET:-changez-moi-secret-tres-long-et-aleatoire}
       - SUPERADMIN_USER=${SUPERADMIN_USER:-mGlobal}
       - SUPERADMIN_PASSWORD=${SUPERADMIN_PASSWORD:-mGlobal2026}
       - TOKEN_TTL=${TOKEN_TTL:-12h}
-      - PORT=4000
+      - PORT=3060
       - DATA_DIR=/data
     volumes:
       - mglobal_data:/data
