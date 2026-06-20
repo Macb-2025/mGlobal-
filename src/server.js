@@ -18,7 +18,7 @@ import portailRouter from './routes/portail.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '8mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Interfaces statiques (SPA distributeur + portails publics)

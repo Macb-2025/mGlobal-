@@ -1,8 +1,14 @@
 import { Router } from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import db from '../lib/db.js';
 import { customAlphabet } from 'nanoid';
 import { requireAuth, denySuperadmin, requireEspaceActif, requireRole } from '../lib/auth.js';
 import { factureHtml } from '../lib/facture.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const UPLOAD_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
 
 const r = Router();
 // Tous les modules métier appartiennent à un distributeur : authentification
@@ -493,8 +499,37 @@ r.get('/parametres', (req, res) => {
   res.json({
     id: d.id, nom: d.nom, raison_sociale: d.raison_sociale, adresse: d.adresse, ville: d.ville,
     telephone: d.telephone, email: d.email, ninea: d.ninea, rccm: d.rccm,
-    devise: d.devise || 'FCFA', tva_defaut: d.tva_defaut ?? 18, pied_facture: d.pied_facture
+    devise: d.devise || 'FCFA', tva_defaut: d.tva_defaut ?? 18, pied_facture: d.pied_facture,
+    logo: d.logo || null
   });
+});
+
+// Upload / mise à jour du logo (admin) : reçoit une image en data URL, l'enregistre
+// dans public/uploads et stocke le chemin pour l'impression des factures & bons.
+r.post('/parametres/logo', requireRole('admin'), (req, res) => {
+  const dataUrl = (req.body?.dataUrl || '').toString();
+  const m = /^data:image\/(png|jpe?g|webp|svg\+xml);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!m) return res.status(400).json({ error: 'Image invalide (PNG, JPG, WEBP ou SVG attendu)' });
+  const ext = m[1] === 'jpeg' ? 'jpg' : (m[1] === 'svg+xml' ? 'svg' : m[1]);
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > 2 * 1024 * 1024) return res.status(400).json({ error: 'Logo trop volumineux (max 2 Mo)' });
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  const fichier = `logo-${did(req)}.${ext}`;
+  // Nettoie les anciens logos de ce distributeur (autres extensions).
+  for (const e of ['png', 'jpg', 'webp', 'svg'])
+    { try { fs.unlinkSync(path.join(UPLOAD_DIR, `logo-${did(req)}.${e}`)); } catch {} }
+  fs.writeFileSync(path.join(UPLOAD_DIR, fichier), buf);
+  const url = `/uploads/${fichier}`;
+  db.prepare(`UPDATE distributeurs SET logo = ? WHERE id = ?`).run(url, did(req));
+  res.json({ ok: true, logo: url });
+});
+
+// Suppression du logo.
+r.delete('/parametres/logo', requireRole('admin'), (req, res) => {
+  const d = profilDistributeur(did(req));
+  if (d?.logo) { try { fs.unlinkSync(path.join(__dirname, '..', '..', 'public', d.logo)); } catch {} }
+  db.prepare(`UPDATE distributeurs SET logo = NULL WHERE id = ?`).run(did(req));
+  res.json({ ok: true });
 });
 
 // Seul l'administrateur de l'espace configure l'identité de facturation.

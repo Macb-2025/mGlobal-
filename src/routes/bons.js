@@ -103,6 +103,19 @@ r.get('/', (req, res) => {
   res.json(rows.map(mapBon));
 });
 
+// Bon de commande imprimable (HTML) — généré à l'envoi au pont bascule.
+r.get('/:id/imprimer', (req, res) => {
+  const did = scopeDistributeur(req);
+  const id = Number(req.params.id);
+  const where = did ? 'AND bc.distributeur_id = @did' : '';
+  const row = db.prepare(`SELECT bc.*, d.nom AS distributeur_nom FROM bons_commande bc
+                          JOIN distributeurs d ON d.id = bc.distributeur_id
+                          WHERE bc.id = @id ${where}`).get({ id, did });
+  if (!row) return res.status(404).send('Bon introuvable dans votre espace');
+  const dist = db.prepare(`SELECT * FROM distributeurs WHERE id = ?`).get(row.distributeur_id);
+  res.set('Content-Type', 'text/html; charset=utf-8').send(bonCommandeHtml(row, dist));
+});
+
 // Détail + timeline d'avancement d'un bon (suivi)
 r.get('/:id', (req, res) => {
   const did = scopeDistributeur(req);
@@ -174,6 +187,65 @@ r.post('/:id/annuler', (req, res) => {
   emitToDistributeur(row.distributeur_id, 'bon:maj', { bon });
   res.json({ ok: true, bon });
 });
+
+const escH = (x) => String(x ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// Modèle imprimable d'un bon de commande envoyé au pont bascule.
+function bonCommandeHtml(b, d) {
+  const titre = d?.raison_sociale || d?.nom || 'mGlobal Pont Bascule';
+  const logo = d?.logo
+    ? `<img src="${escH(d.logo)}" alt="logo" style="max-height:64px;max-width:180px;object-fit:contain">`
+    : `<div style="font-size:26px;font-weight:800;color:#0f3d6e">⚖ ${escH(titre)}</div>`;
+  const ligneIdent = [d?.adresse, d?.ville].filter(Boolean).join(', ');
+  const contact = [d?.telephone && 'Tél : ' + d.telephone, d?.email].filter(Boolean).join('  ·  ');
+  const row = (l, v) => `<tr><td class="lbl">${l}</td><td class="val">${escH(v || '—')}</td></tr>`;
+  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+<title>Bon ${escH(b.reference)}</title>
+<style>
+  *{box-sizing:border-box;}
+  body{font-family:'Segoe UI',Arial,sans-serif;color:#1f2937;margin:0;background:#eef2f7;}
+  .sheet{max-width:780px;margin:22px auto;background:#fff;padding:38px 42px;border-top:6px solid #0f3d6e;box-shadow:0 8px 30px rgba(0,0,0,.1);}
+  .top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #e5e7eb;padding-bottom:16px;}
+  .top .ident{font-size:12px;color:#6b7280;margin-top:6px;line-height:1.5;}
+  .doc{text-align:right;}
+  .doc .t{font-size:22px;font-weight:800;color:#0f3d6e;letter-spacing:1px;}
+  .doc .n{font-size:14px;font-weight:700;margin-top:4px;}
+  .doc .d{color:#6b7280;font-size:12px;}
+  table{width:100%;border-collapse:collapse;margin-top:20px;}
+  td{padding:9px 6px;border-bottom:1px solid #eef2f7;font-size:13px;}
+  .lbl{color:#6b7280;width:38%;}.val{font-weight:700;}
+  .note{margin-top:18px;padding:12px 14px;background:#f8fafc;border-left:3px solid #0f3d6e;font-size:13px;color:#374151;}
+  .sign{display:flex;justify-content:space-between;margin-top:48px;color:#6b7280;font-size:12px;}
+  .sign>div{width:42%;border-top:1px solid #cbd5e1;text-align:center;padding-top:8px;}
+  .sig-num{margin-top:14px;font-size:11px;color:#9ca3af;word-break:break-all;}
+  .foot{text-align:center;color:#9ca3af;font-size:11px;margin-top:24px;}
+  @media print{body{background:#fff;}.sheet{box-shadow:none;margin:0;}button{display:none;}}
+</style></head><body>
+<div class="sheet">
+  <div class="top">
+    <div>${logo}<div class="ident">${escH(ligneIdent)}<br>${escH(contact)}${d?.ninea ? '<br>NINEA : ' + escH(d.ninea) : ''}${d?.rccm ? '  ·  RCCM : ' + escH(d.rccm) : ''}</div></div>
+    <div class="doc"><div class="t">BON DE COMMANDE</div>
+      <div class="n">N° ${escH(b.reference)}${b.numero != null ? ' (#' + b.numero + ')' : ''}</div>
+      <div class="d">${escH((b.created_at || '').slice(0, 16))}</div>
+      <div class="d">Statut : ${escH(b.statut)}</div></div>
+  </div>
+  <table>
+    ${row('Client', b.client)}
+    ${row('Produit', b.produit)}
+    ${row('Immatriculation', b.immatriculation)}
+    ${row('Chauffeur', b.chauffeur)}
+    ${row('Destination', b.destination)}
+    ${row('Quantité prévue', (b.quantite_prevue || 0) + ' t')}
+  </table>
+  ${b.note ? `<div class="note"><b>Note :</b> ${escH(b.note)}</div>` : ''}
+  <div class="sign"><div>Signature &amp; Cachet</div><div>Signature Chauffeur</div></div>
+  ${b.signature ? `<div class="sig-num">🔏 Signature électronique : ${escH(b.signature)} — ${escH(b.signature_par || '')} ${escH(b.signature_le || '')}</div>` : ''}
+  <div class="foot">Document généré par la plateforme mGlobal — ${new Date().toLocaleString('fr-FR')}</div>
+  <div style="text-align:center;margin-top:18px"><button onclick="window.print()">🖨 Imprimer</button></div>
+</div>
+<script>window.addEventListener('load', () => setTimeout(() => window.print(), 350));</script>
+</body></html>`;
+}
 
 // Suppression définitive d'un bon (administrateur uniquement).
 r.delete('/:id', (req, res) => {

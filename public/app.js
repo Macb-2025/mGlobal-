@@ -230,7 +230,7 @@ const statutInfo = (id) => BON_STATUTS.find(s => s.id === id) || { label: id, cl
 async function pageSuivi() {
   $('pageTitle').textContent = 'Suivi des bons';
   const c = $('content');
-  const canCreate = S.user.role === 'admin' || S.user.role === 'operateur';
+  const canCreate = ['admin', 'assistante', 'comptable', 'operateur'].includes(S.user.role);
   c.innerHTML = `
     ${canCreate ? `<div class="panel"><h3>Créer un bon et l'envoyer au pont bascule</h3>
       <div class="formgrid">
@@ -272,9 +272,11 @@ async function creerBon() {
     note: $('cbNote').value
   };
   try {
-    await api('/bons-commande', { method: 'POST', body: JSON.stringify(body) });
+    const r = await api('/bons-commande', { method: 'POST', body: JSON.stringify(body) });
     toast('Bon créé, numéroté et signé puis envoyé au pont bascule');
     ['cbClient','cbProduit','cbImmat','cbChauffeur','cbDest','cbQte','cbNote'].forEach(id => { if ($(id)) $(id).value = ''; });
+    // Impression automatique du bon dès l'envoi au pont bascule.
+    if (r?.bon?.id) imprimerBon(r.bon.id);
     loadSuivi();
   } catch (e) { toast(e.message, true); }
 }
@@ -308,6 +310,7 @@ function renderSuivi(rows) {
         <td>${b.signature ? `<span class="sig-ok" title="${esc(b.signature)}">🔏 signé</span>` : '—'}</td>
         <td class="row-actions">
           <button class="btn sec" onclick="suiviDetail(${b.id})">Suivi</button>
+          <button class="btn sec" onclick="imprimerBon(${b.id})">🖨 Imprimer</button>
           ${isAdmin && editable ? `<button class="btn sec" onclick="modifierBon(${b.id})">Modifier</button>` : ''}
           ${isAdmin && !['termine','annule'].includes(b.statut) ? `<button class="btn sec" onclick="annulerBon(${b.id})">Annuler</button>` : ''}
           ${isAdmin ? `<button class="btn danger" onclick="supprimerBon(${b.id})">Suppr.</button>` : ''}
@@ -858,6 +861,7 @@ async function loadFactures() {
   } catch (e) { toast(e.message, true); }
 }
 window.imprimerFacture = (id) => window.open(`/api/factures/${id}/imprimer?token=${encodeURIComponent(S.token)}`, '_blank');
+window.imprimerBon = (id) => window.open(`/api/bons-commande/${id}/imprimer?token=${encodeURIComponent(S.token)}`, '_blank');
 
 /* ───────────── Relicat / Créances ───────────── */
 async function pageRelicat() {
@@ -894,7 +898,20 @@ async function pageParametres() {
   const c = $('content');
   let p = {};
   try { p = await api('/parametres'); } catch (e) { toast(e.message, true); }
-  c.innerHTML = `<div class="panel"><h3>Identité de l'entreprise (en-tête des factures)</h3>
+  c.innerHTML = `<div class="panel"><h3>Logo de l'entreprise</h3>
+    <div class="hint">Le logo apparaît en en-tête de vos factures et bons imprimés (PNG, JPG, WEBP ou SVG, max 2 Mo).</div>
+    <div style="display:flex;align-items:center;gap:18px;margin-top:12px">
+      <div id="prLogoBox" style="width:160px;height:90px;border:1px dashed var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;background:#fff;overflow:hidden">
+        ${p.logo ? `<img src="${esc(p.logo)}" style="max-width:100%;max-height:100%;object-fit:contain">` : '<span class="hint">Aucun logo</span>'}</div>
+      <div>
+        <input type="file" id="prLogoFile" accept="image/png,image/jpeg,image/webp,image/svg+xml" style="margin-bottom:8px">
+        <div style="display:flex;gap:8px">
+          <button class="btn sec" id="prLogoUp">Téléverser</button>
+          <button class="btn danger" id="prLogoDel" ${p.logo ? '' : 'disabled'}>Retirer</button>
+        </div>
+      </div>
+    </div></div>
+    <div class="panel"><h3>Identité de l'entreprise (en-tête des factures)</h3>
     <div class="hint">Ces informations apparaissent sur toutes vos factures (mentions légales).</div>
     <div class="formgrid" style="margin-top:12px">
       <span style="flex:1 1 100%"><label>Raison sociale</label><input id="prRS" value="${esc(p.raison_sociale || p.nom || '')}"></span>
@@ -917,6 +934,27 @@ async function pageParametres() {
         rccm: $('prRccm').value, devise: $('prDev').value, tva_defaut: Number($('prTva').value || 18),
         pied_facture: $('prPied').value }) });
       toast('Paramètres enregistrés');
+    } catch (e) { toast(e.message, true); }
+  };
+  $('prLogoUp').onclick = () => {
+    const f = $('prLogoFile').files[0];
+    if (!f) return toast('Choisissez un fichier image', true);
+    if (f.size > 2 * 1024 * 1024) return toast('Logo trop volumineux (max 2 Mo)', true);
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const r = await api('/parametres/logo', { method: 'POST', body: JSON.stringify({ dataUrl: reader.result }) });
+        $('prLogoBox').innerHTML = `<img src="${esc(r.logo)}?t=${Date.now()}" style="max-width:100%;max-height:100%;object-fit:contain">`;
+        $('prLogoDel').disabled = false;
+        toast('Logo enregistré');
+      } catch (e) { toast(e.message, true); }
+    };
+    reader.readAsDataURL(f);
+  };
+  $('prLogoDel').onclick = async () => {
+    try { await api('/parametres/logo', { method: 'DELETE' });
+      $('prLogoBox').innerHTML = '<span class="hint">Aucun logo</span>';
+      $('prLogoDel').disabled = true; toast('Logo retiré');
     } catch (e) { toast(e.message, true); }
   };
 }

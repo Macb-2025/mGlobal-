@@ -310,6 +310,7 @@ addColumn('distributeurs', 'rccm',     'rccm TEXT');
 addColumn('distributeurs', 'devise',   "devise TEXT NOT NULL DEFAULT 'FCFA'");
 addColumn('distributeurs', 'tva_defaut','tva_defaut REAL NOT NULL DEFAULT 18');
 addColumn('distributeurs', 'pied_facture', 'pied_facture TEXT');
+addColumn('distributeurs', 'logo', 'logo TEXT'); // chemin du logo (impression factures/bons)
 
 // Catalogue : prix de vente HT + taux de TVA + référence article.
 addColumn('produits', 'reference',  'reference TEXT');

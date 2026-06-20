@@ -7,3 +7,5 @@ data/
 npm-debug.log
 *.log
 .DS_Store
+public/uploads/*
+!public/uploads/.gitkeep

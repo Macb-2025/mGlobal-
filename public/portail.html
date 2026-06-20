@@ -1,116 +1,225 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>mGlobal Cloud - Portail Client</title>
-    <link rel="stylesheet" href="/styles.css">
-    <style>
-        .card { background: #ffffff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #eef2f5; }
-        .bg-alert-dette { background-color: #fff5f5; border-left: 5px solid #e53e3e; }
-        .bg-alert-relicat { background-color: #f0fff4; border-left: 5px solid #38a169; }
-        .d-none { display: none !important; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mGlobal — Espace Client</title>
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <style>
+    :root{
+      --bg:#0f172a; --card:#ffffff; --ink:#1e293b; --muted:#64748b; --line:#e2e8f0;
+      --blue:#0f3d6e; --blue2:#2563eb; --green:#15803d; --red:#b91c1c; --soft:#f1f5f9;
+    }
+    *{box-sizing:border-box;}
+    body{margin:0;font-family:'Segoe UI',system-ui,Arial,sans-serif;color:var(--ink);
+      background:linear-gradient(160deg,#0f172a 0%,#1e293b 45%,#0f3d6e 100%);min-height:100vh;}
+
+    /* ── Connexion ── */
+    .auth-wrap{max-width:430px;margin:0 auto;padding:9vh 18px;}
+    .auth{background:var(--card);border-radius:16px;padding:36px 30px;box-shadow:0 24px 60px rgba(0,0,0,.35);text-align:center;}
+    .auth .logo{font-size:38px;}
+    .auth h1{margin:8px 0 2px;color:var(--blue);font-size:22px;}
+    .auth p.sub{color:var(--muted);font-size:13px;margin:0 0 24px;}
+    .auth label{display:block;text-align:left;font-weight:600;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;}
+    .auth input{width:100%;padding:13px 14px;border:1px solid var(--line);border-radius:9px;font-size:16px;letter-spacing:1px;text-transform:uppercase;}
+    .auth button{width:100%;margin-top:18px;padding:13px;background:var(--blue2);color:#fff;font-weight:700;
+      border:0;border-radius:9px;cursor:pointer;font-size:15px;transition:.15s;}
+    .auth button:hover{background:var(--blue);}
+    .auth .err{color:var(--red);font-size:13px;min-height:18px;margin-top:10px;}
+    .auth .alt{margin-top:18px;font-size:13px;color:var(--muted);}
+    .auth .alt a{color:var(--blue2);text-decoration:none;font-weight:600;}
+
+    /* ── Dashboard ── */
+    .dash{max-width:1060px;margin:0 auto;padding:26px 18px 60px;}
+    .topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;
+      background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:18px 22px;color:#fff;margin-bottom:22px;}
+    .topbar .who h1{margin:0;font-size:21px;}
+    .topbar .who .meta{font-size:13px;color:#cbd5e1;margin-top:3px;}
+    .topbar .vendor{display:flex;align-items:center;gap:12px;text-align:right;}
+    .topbar .vendor img{max-height:48px;max-width:150px;object-fit:contain;background:#fff;border-radius:8px;padding:4px;}
+    .topbar .vendor .vn{font-size:14px;font-weight:700;}
+    .topbar .vendor .vc{font-size:12px;color:#cbd5e1;}
+    .actions{display:flex;gap:10px;}
+    .actions button{padding:10px 16px;border:0;border-radius:9px;cursor:pointer;font-weight:600;font-size:13px;}
+    .btn-print{background:#fff;color:var(--blue);}
+    .btn-out{background:rgba(255,255,255,.15);color:#fff;}
+
+    .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px;}
+    .kpi{background:var(--card);border-radius:13px;padding:18px;box-shadow:0 8px 24px rgba(0,0,0,.18);border-left:5px solid var(--blue2);}
+    .kpi .l{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700;}
+    .kpi .v{font-size:24px;font-weight:800;margin-top:8px;}
+    .kpi.dette{border-left-color:var(--red);}      .kpi.dette .v{color:var(--red);}
+    .kpi.relicat{border-left-color:var(--green);}  .kpi.relicat .v{color:var(--green);}
+    .kpi.fact{border-left-color:var(--blue);}
+    .kpi.tonnage{border-left-color:#d97706;}
+
+    .panel{background:var(--card);border-radius:14px;padding:22px 24px;box-shadow:0 8px 24px rgba(0,0,0,.18);margin-bottom:22px;}
+    .panel h3{margin:0 0 4px;color:var(--blue);font-size:16px;display:flex;align-items:center;gap:8px;}
+    .panel .sub{color:var(--muted);font-size:12px;margin:0 0 14px;}
+    table{width:100%;border-collapse:collapse;}
+    th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);
+      padding:10px 12px;border-bottom:2px solid var(--line);}
+    td{padding:11px 12px;border-bottom:1px solid var(--soft);font-size:13px;}
+    tbody tr:hover{background:var(--soft);}
+    .r{text-align:right;} .b{font-weight:700;}
+    .pos{color:var(--green);font-weight:700;} .neg{color:var(--red);font-weight:700;}
+    .pill{display:inline-block;padding:3px 10px;border-radius:11px;font-size:11px;font-weight:700;}
+    .pill.payee{background:#dcfce7;color:#15803d;} .pill.partielle{background:#fef9c3;color:#a16207;}
+    .pill.emise{background:#dbeafe;color:#1d4ed8;} .pill.annulee{background:#f3e8ff;color:#7e22ce;}
+    .empty{text-align:center;color:var(--muted);padding:22px;font-size:13px;}
+    .d-none{display:none!important;}
+    @media print{
+      body{background:#fff;} .topbar{background:#fff;color:#000;border:1px solid #ccc;}
+      .topbar .who h1,.topbar .vendor .vn{color:#000;} .actions{display:none;}
+      .panel,.kpi{box-shadow:none;border:1px solid #ddd;}
+    }
+  </style>
 </head>
-<body style="background-color: #f7fafc; color: #2d3748; font-family: sans-serif;">
+<body>
 
-    <!-- FORMULAIRE DE CONNEXION INITIAL -->
-    <div class="container" id="auth-section" style="max-width: 450px; margin: 12% auto px;">
-        <div class="card p-4 text-center">
-            <h2 style="color: #4a5568; margin-bottom: 8px;">mGlobal Cloud</h2>
-            <p style="color: #718096; font-size: 14px; margin-bottom: 24px;">Suivi en temps réel & pont-bascule</p>
-            
-            <div style="text-align: left; margin-bottom: 18px;">
-                <label style="font-weight: 600; font-size: 13px; color: #4a5568;">IMMATRICULATION UNIQUE CLIENT :</label>
-                <input type="text" id="input-immatriculation" style="width: 100%; padding: 10px; margin-top: 6px; border: 1px solid #cbd5e0; border-radius: 6px; box-sizing: border-box;" placeholder="Ex: MGL-3F2A9X" required>
-            </div>
-            <button onclick="authentifierClient()" style="width: 100%; padding: 12px; background: #3182ce; color: #fff; font-weight: bold; border: none; border-radius: 6px; cursor: pointer;">Accéder à mon espace</button>
-            <p style="margin-top:16px; font-size:13px; color:#718096;">Vous êtes fournisseur ?
-              <a href="/portail-fournisseur.html" style="color:#3182ce;">Accéder à l'espace fournisseur</a></p>
-        </div>
+  <!-- CONNEXION -->
+  <div class="auth-wrap" id="auth-section">
+    <div class="auth">
+      <div class="logo">⚖</div>
+      <h1>Espace Client mGlobal</h1>
+      <p class="sub">Consultez votre situation, vos factures et vos livraisons en temps réel</p>
+      <label for="input-immatriculation">Code / Immatriculation client</label>
+      <input type="text" id="input-immatriculation" placeholder="Ex : MGL-3F2A9X" autocomplete="off">
+      <button id="btn-login">Accéder à mon espace</button>
+      <div class="err" id="auth-err"></div>
+      <p class="alt">Vous êtes fournisseur ? <a href="/portail-fournisseur.html">Espace fournisseur</a></p>
+    </div>
+  </div>
+
+  <!-- TABLEAU DE BORD -->
+  <div class="dash d-none" id="dashboard-section">
+    <div class="topbar">
+      <div class="who">
+        <h1 id="txt-bienvenu">Espace Client</h1>
+        <div class="meta" id="txt-clientmeta"></div>
+      </div>
+      <div class="vendor" id="vendor-box"></div>
+    </div>
+    <div class="actions" style="justify-content:flex-end;margin-bottom:18px">
+      <button class="btn-print" onclick="window.print()">🖨️ Imprimer ma situation</button>
+      <button class="btn-out" onclick="location.reload()">↩ Quitter</button>
     </div>
 
-    <!-- ZONE DE TABLEAU DE BORD CLIENT -->
-    <div class="container d-none" id="dashboard-section" style="max-width: 1000px; margin: 40px auto; padding: 0 20px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px;">
-            <h1 id="txt-bienvenu" style="color: #2d3748; margin: 0;">Espace Client</h1>
-            <button onclick="window.print()" style="padding: 10px 18px; background: #4a5568; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;">🖨️ Imprimer la situation</button>
-        </div>
+    <div class="kpis" id="kpis"></div>
 
-        <!-- BLOCS DE SITUATION FINANCIÈRE -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px;">
-            <div class="card p-3 bg-alert-dette">
-                <span style="font-size: 13px; color: #718096; font-weight: bold; text-transform: uppercase;">Dettes / Restes à payer</span>
-                <h2 id="txt-dette" style="margin: 10px 0 0 0; color: #c53030;">0.00 FCFA</h2>
-            </div>
-            <div class="card p-3 bg-alert-relicat">
-                <span style="font-size: 13px; color: #718096; font-weight: bold; text-transform: uppercase;">Acomptes / Relicats disponibles</span>
-                <h2 id="txt-relicat" style="margin: 10px 0 0 0; color: #2f855a;">0.00 FCFA</h2>
-            </div>
-        </div>
-
-        <!-- TABLEAU COMPTABILITÉ / FACTURATION -->
-        <div class="card p-4" style="margin-bottom: 30px;">
-            <h3 style="margin-top: 0; color: #4a5568; border-bottom: 2px solid #edf2f7; padding-bottom: 10px;">Relevé de Facturation</h3>
-            <table style="width: 100%; border-collapse: collapse; text-align: left;">
-                <thead>
-                    <tr style="background: #f7fafc; color: #718096;"><th style="padding: 12px; border-bottom: 2px solid #edf2f7;">Date</th><th style="padding: 12px; border-bottom: 2px solid #edf2f7;">Montant Facturé</th><th style="padding: 12px; border-bottom: 2px solid #edf2f7;">Montant Réglé</th><th style="padding: 12px; border-bottom: 2px solid #edf2f7;">Reste à payer</th></tr>
-                </thead>
-                <tbody id="tbody-factures"></tbody>
-            </table>
-        </div>
-
-        <!-- TABLEAU ENLÈVEMENTS COMPTE GROS -->
-        <div class="card p-4">
-            <h3 style="margin-top: 0; color: #4a5568; border-bottom: 2px solid #edf2f7; padding-bottom: 10px;">Suivi de mes Enlèvements Marchandises</h3>
-            <table style="width: 100%; border-collapse: collapse; text-align: left;">
-                <thead>
-                    <tr style="background: #f7fafc; color: #718096;"><th style="padding: 12px; border-bottom: 2px solid #edf2f7;">Désignation Produit</th><th style="padding: 12px; border-bottom: 2px solid #edf2f7;">Volume global acheté</th><th style="padding: 12px; border-bottom: 2px solid #edf2f7;">Solde Restant en Dépôt</th></tr>
-                </thead>
-                <tbody id="tbody-enlevements"></tbody>
-            </table>
-        </div>
+    <!-- Situation financière -->
+    <div class="panel">
+      <h3>💰 Relevé de facturation</h3>
+      <p class="sub">Détail de vos factures avec montants HT, TVA et reste à payer.</p>
+      <table>
+        <thead><tr><th>N° Facture</th><th>Date</th><th>N° Bon</th><th class="r">Montant HT</th>
+          <th class="r">TVA</th><th class="r">TTC</th><th class="r">Réglé</th><th class="r">Reste</th><th>Statut</th></tr></thead>
+        <tbody id="tbody-factures"></tbody>
+      </table>
     </div>
 
-    <script>
-        function authentifierClient() {
-            const immatriculation = document.getElementById('input-immatriculation').value.trim();
-            if (!immatriculation) return alert('Veuillez renseigner votre immatriculation.');
+    <!-- Livraisons / pesées -->
+    <div class="panel">
+      <h3>🚚 Mes livraisons (bons de pesage)</h3>
+      <p class="sub">Historique des chargements pesés au pont bascule.</p>
+      <table>
+        <thead><tr><th>N° Ticket</th><th>Date</th><th>Produit</th><th>Immat.</th>
+          <th class="r">Poids net (t)</th><th class="r">Montant</th></tr></thead>
+        <tbody id="tbody-pesees"></tbody>
+      </table>
+    </div>
 
-            fetch('/api/portail-public/connexion', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ immatriculation })
-            })
-            .then(res => {
-                if (!res.ok) throw new Error("Immatriculation introuvable");
-                return res.json();
-            })
-            .then(data => {
-                document.getElementById('auth-section').classList.add('d-none');
-                document.getElementById('dashboard-section').classList.remove('d-none');
+    <!-- Enlèvements gros -->
+    <div class="panel">
+      <h3>🧱 Mes comptes en gros (enlèvements)</h3>
+      <p class="sub">Volumes achetés en gros et soldes restant à enlever en dépôt.</p>
+      <table>
+        <thead><tr><th>Produit</th><th class="r">Volume acheté</th><th class="r">Déjà enlevé</th>
+          <th class="r">Reste en dépôt</th></tr></thead>
+        <tbody id="tbody-enlevements"></tbody>
+      </table>
+    </div>
+  </div>
 
-                // Injection des données de l'état civil
-                document.getElementById('txt-bienvenu').innerText = "Rapport de situation : " + data.client.nom;
-                document.getElementById('txt-dette').innerText = data.client.solde_dette.toLocaleString() + " FCFA";
-                document.getElementById('txt-relicat').innerText = data.client.solde_relicat.toLocaleString() + " FCFA";
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fmt = (n) => Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    const fmt3 = (n) => Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 3 });
+    const esc = (x) => String(x ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const dt = (s) => esc(String(s || '').slice(0, 16).replace('T', ' '));
 
-                // Affichage du relevé des factures
-                let fHtml = '';
-                data.factures.forEach(f => {
-                    fHtml += `<tr style="border-bottom: 1px solid #edf2f7;"><td style="padding:12px;">${f.date}</td><td style="padding:12px;">${f.montant_total.toLocaleString()}</td><td style="padding:12px;">${f.montant_paye.toLocaleString()}</td><td style="padding:12px; font-weight:bold; color:${f.relicat > 0 ? '#c53030' : '#2d3748'}">${f.relicat.toLocaleString()}</td></tr>`;
-                });
-                document.getElementById('tbody-factures').innerHTML = fHtml || '<tr><td colspan="4" style="padding:12px; text-align:center;">Aucune facture disponible.</td></tr>';
+    let DEVISE = 'FCFA';
 
-                // Affichage du suivi des enlèvements
-                let eHtml = '';
-                data.enlevements.forEach(e => {
-                    eHtml += `<tr style="border-bottom: 1px solid #edf2f7;"><td style="padding:12px; font-weight:600;">${e.nom}</td><td style="padding:12px;">${e.quantite_totale}</td><td style="padding:12px; color:#3182ce; font-weight:bold;">${e.quantite_restante}</td></tr>`;
-                });
-                document.getElementById('tbody-enlevements').innerHTML = eHtml || '<tr><td colspan="3" style="padding:12px; text-align:center;">Aucun achat de volume en attente d\'enlèvement.</td></tr>';
-            })
-            .catch(err => alert(err.message));
-        }
-    </script>
+    async function authentifier() {
+      const immatriculation = $('input-immatriculation').value.trim();
+      $('auth-err').textContent = '';
+      if (!immatriculation) { $('auth-err').textContent = 'Veuillez saisir votre code / immatriculation.'; return; }
+      try {
+        const res = await fetch('/api/portail-public/connexion', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ immatriculation })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Immatriculation introuvable');
+        rendre(data);
+      } catch (e) { $('auth-err').textContent = e.message; }
+    }
+
+    function rendre(data) {
+      $('auth-section').classList.add('d-none');
+      $('dashboard-section').classList.remove('d-none');
+      const c = data.client, d = data.distributeur || {}, r = data.resume || {};
+
+      $('txt-bienvenu').textContent = c.nom;
+      $('txt-clientmeta').textContent =
+        [c.immatriculation, c.telephone, c.adresse].filter(Boolean).join('  ·  ');
+
+      const vn = d.raison_sociale || d.nom || '';
+      const vc = [d.adresse, d.ville, d.telephone].filter(Boolean).join(' · ');
+      $('vendor-box').innerHTML =
+        (d.logo ? `<img src="${esc(d.logo)}" alt="logo">` : '') +
+        `<div><div class="vn">${esc(vn)}</div><div class="vc">${esc(vc)}</div></div>`;
+
+      $('kpis').innerHTML = [
+        ['dette', 'Dettes / Restes à payer', fmt(c.solde_dette) + ' ' + DEVISE],
+        ['relicat', 'Acomptes / Relicats', fmt(c.solde_relicat) + ' ' + DEVISE],
+        ['fact', 'Total facturé', fmt(r.totalFacture) + ' ' + DEVISE],
+        ['fact', 'Total réglé', fmt(r.totalRegle) + ' ' + DEVISE],
+        ['tonnage', 'Tonnage livré', fmt3(r.tonnageTotal) + ' t']
+      ].map(([cls, l, v]) => `<div class="kpi ${cls}"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
+
+      // Factures
+      $('tbody-factures').innerHTML = (data.factures || []).length
+        ? data.factures.map(f => `<tr>
+            <td class="b">${esc(f.numero || '—')}</td><td>${dt(f.date)}</td><td>${esc(f.numero_bon || '—')}</td>
+            <td class="r">${fmt(f.montant_ht)}</td><td class="r">${fmt(f.montant_tva)}</td>
+            <td class="r b">${fmt(f.montant_total)}</td><td class="r">${fmt(f.montant_paye)}</td>
+            <td class="r ${f.relicat > 0 ? 'neg' : 'pos'}">${fmt(f.relicat)}</td>
+            <td><span class="pill ${esc(f.statut || 'emise')}">${esc(f.statut || 'émise')}</span></td></tr>`).join('')
+        : '<tr><td colspan="9" class="empty">Aucune facture disponible.</td></tr>';
+
+      // Pesées
+      $('tbody-pesees').innerHTML = (data.pesees || []).length
+        ? data.pesees.map(p => `<tr>
+            <td class="b">${esc(p.numero_ticket || '—')}</td><td>${dt(p.date_sortie)}</td>
+            <td>${esc(p.produit || '—')}</td><td>${esc(p.immatriculation || '—')}</td>
+            <td class="r b">${fmt3(p.poids_net)}</td><td class="r">${fmt(p.montant_total)}</td></tr>`).join('')
+        : '<tr><td colspan="6" class="empty">Aucune livraison enregistrée.</td></tr>';
+
+      // Enlèvements
+      $('tbody-enlevements').innerHTML = (data.enlevements || []).length
+        ? data.enlevements.map(e => {
+            const enleve = (e.quantite_totale || 0) - (e.quantite_restante || 0);
+            return `<tr><td class="b">${esc(e.nom || '—')}</td>
+              <td class="r">${fmt3(e.quantite_totale)} ${esc(e.unite || '')}</td>
+              <td class="r">${fmt3(enleve)} ${esc(e.unite || '')}</td>
+              <td class="r b" style="color:var(--blue2)">${fmt3(e.quantite_restante)} ${esc(e.unite || '')}</td></tr>`;
+          }).join('')
+        : '<tr><td colspan="4" class="empty">Aucun compte en gros en cours.</td></tr>';
+    }
+
+    $('btn-login').addEventListener('click', authentifier);
+    $('input-immatriculation').addEventListener('keydown', (e) => { if (e.key === 'Enter') authentifier(); });
+  </script>
 </body>
 </html>

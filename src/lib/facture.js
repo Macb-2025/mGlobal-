@@ -136,7 +136,9 @@ export function factureHtml(fa, vendeur = {}) {
 <div class="sheet">
   <div class="top">
     <div>
-      <div class="brand">⚖ ${esc(raison)}</div>
+      ${vendeur.logo
+        ? `<img src="${esc(vendeur.logo)}" alt="logo" style="max-height:70px;max-width:220px;object-fit:contain;margin-bottom:6px">`
+        : `<div class="brand">⚖ ${esc(raison)}</div>`}
       <div class="seller">
         ${vendeur.adresse ? esc(vendeur.adresse) + '<br>' : ''}
         ${vendeur.ville ? esc(vendeur.ville) + '<br>' : ''}
