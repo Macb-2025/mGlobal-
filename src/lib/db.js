@@ -221,6 +221,24 @@ CREATE TABLE IF NOT EXISTS factures (
 );
 CREATE INDEX IF NOT EXISTS idx_fact_dist ON factures(distributeur_id);
 
+-- Lignes de facture (articles facturés). Permet une facturation conforme :
+-- détail par article avec quantité, prix unitaire HT, taux de TVA et totaux.
+CREATE TABLE IF NOT EXISTS facture_lignes (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  facture_id    INTEGER NOT NULL REFERENCES factures(id) ON DELETE CASCADE,
+  produit_id    INTEGER REFERENCES produits(id) ON DELETE SET NULL,
+  designation   TEXT NOT NULL,
+  quantite      REAL NOT NULL DEFAULT 0,
+  unite         TEXT,
+  prix_unitaire REAL NOT NULL DEFAULT 0,   -- prix unitaire HT
+  remise        REAL NOT NULL DEFAULT 0,   -- remise en % sur la ligne
+  tva           REAL NOT NULL DEFAULT 0,   -- taux de TVA en %
+  montant_ht    REAL NOT NULL DEFAULT 0,
+  montant_tva   REAL NOT NULL DEFAULT 0,
+  montant_ttc   REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_fl_fact ON facture_lignes(facture_id);
+
 -- Journal de comptabilité (entrées/sorties de caisse) d'un distributeur.
 CREATE TABLE IF NOT EXISTS comptabilite (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -280,6 +298,33 @@ addColumn('bons_commande', 'numero', 'numero INTEGER');
 addColumn('bons_commande', 'signature', 'signature TEXT');
 addColumn('bons_commande', 'signature_par', 'signature_par TEXT');
 addColumn('bons_commande', 'signature_le', 'signature_le TEXT');
+
+// Identité légale du distributeur (en-tête de facture & mentions obligatoires).
+addColumn('distributeurs', 'raison_sociale', 'raison_sociale TEXT');
+addColumn('distributeurs', 'adresse',  'adresse TEXT');
+addColumn('distributeurs', 'ville',    'ville TEXT');
+addColumn('distributeurs', 'telephone','telephone TEXT');
+addColumn('distributeurs', 'email',    'email TEXT');
+addColumn('distributeurs', 'ninea',    'ninea TEXT');
+addColumn('distributeurs', 'rccm',     'rccm TEXT');
+addColumn('distributeurs', 'devise',   "devise TEXT NOT NULL DEFAULT 'FCFA'");
+addColumn('distributeurs', 'tva_defaut','tva_defaut REAL NOT NULL DEFAULT 18');
+addColumn('distributeurs', 'pied_facture', 'pied_facture TEXT');
+
+// Catalogue : prix de vente HT + taux de TVA + référence article.
+addColumn('produits', 'reference',  'reference TEXT');
+addColumn('produits', 'prix_vente', 'prix_vente REAL NOT NULL DEFAULT 0');
+addColumn('produits', 'tva',        'tva REAL NOT NULL DEFAULT 18');
+
+// Facturation conforme : montants HT/TVA/TTC, échéance, statut, lien au bon.
+addColumn('factures', 'numero_bon',  'numero_bon TEXT');
+addColumn('factures', 'client_nom',  'client_nom TEXT');
+addColumn('factures', 'montant_ht',  'montant_ht REAL NOT NULL DEFAULT 0');
+addColumn('factures', 'montant_tva', 'montant_tva REAL NOT NULL DEFAULT 0');
+addColumn('factures', 'remise_globale', 'remise_globale REAL NOT NULL DEFAULT 0');
+addColumn('factures', 'echeance',    'echeance TEXT');
+addColumn('factures', 'statut',      "statut TEXT NOT NULL DEFAULT 'emise'");
+addColumn('factures', 'mode_paiement','mode_paiement TEXT');
 
 // Reprise des bons existants : numérotation séquentielle (par distributeur) +
 // signature électronique, pour que les anciens bons soient eux aussi conformes.

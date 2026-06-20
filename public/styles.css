@@ -142,3 +142,37 @@ td.neg { color:var(--red); font-weight:700; }
 .modal-bg .modal { width:min(560px,92vw); max-height:88vh; overflow:auto; }
 
 @media (max-width:640px){ .bon-meta { grid-template-columns:1fr; } }
+
+/* Bouton Retour (topbar) */
+.btn.back { background:transparent; border:1px solid var(--line); color:var(--muted); padding:6px 12px; margin-right:14px; align-items:center; }
+.btn.back:hover { color:#fff; border-color:var(--accent); }
+.topbar { display:flex; align-items:center; gap:10px; }
+
+/* Rôles supplémentaires */
+.tag.comptable  { background:#10261a; color:var(--green); }
+.tag.assistante { background:#221a2c; color:#c08ce0; }
+
+/* Facturation : lignes d'articles */
+table.fa-lignes { width:100%; }
+table.fa-lignes input { padding:6px 8px; }
+table.fa-lignes td.r { text-align:right; font-weight:700; color:var(--accent); white-space:nowrap; }
+
+/* Facturation : bloc des totaux */
+.fa-totaux { margin-top:16px; margin-left:auto; max-width:360px; background:#0b0f1a; border:1px solid var(--line); border-radius:10px; padding:14px 18px; }
+.fa-totaux .row { display:flex; justify-content:space-between; padding:5px 0; font-size:14px; }
+.fa-totaux .row span { color:var(--muted); }
+.fa-totaux .row b { color:#e0e8f0; }
+.fa-totaux .row.ttc { border-top:1px solid var(--line); margin-top:6px; padding-top:10px; font-size:17px; }
+.fa-totaux .row.ttc span,.fa-totaux .row.ttc b { color:var(--accent); font-weight:800; }
+.fa-totaux .row.pos b { color:var(--green); }
+.fa-totaux .row.neg b { color:var(--red); }
+
+/* Impression des rapports / comptabilité */
+@media print {
+  .sidebar, .topbar .who, .topbar .btn, .filters, .nav, #btnBack { display:none !important; }
+  .main { margin:0 !important; }
+  .content { padding:0 !important; }
+  .panel { border:none !important; box-shadow:none !important; page-break-inside:avoid; }
+  body { background:#fff !important; color:#000 !important; }
+  table, th, td { color:#000 !important; border-color:#999 !important; }
+}

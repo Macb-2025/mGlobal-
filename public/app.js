@@ -49,7 +49,8 @@ function logout() {
   $('app').classList.add('hidden'); $('login').classList.remove('hidden');
 }
 
-const ROLE_LABEL = { superadmin: 'Super-admin mGlobal', admin: 'Administrateur', superviseur: 'Superviseur', operateur: 'Opérateur' };
+const ROLE_LABEL = { superadmin: 'Super-admin mGlobal', admin: 'Administrateur',
+  superviseur: 'Superviseur', comptable: 'Comptable', assistante: 'Assistante', operateur: 'Opérateur' };
 
 function menuFor(role) {
   // Super-admin : administration uniquement (comptes + distributeurs), aucun accès
@@ -60,20 +61,44 @@ function menuFor(role) {
       { id: 'users', label: '🔑 Création de comptes' }
     ];
   }
-  const base = [
-    { id: 'dashboard', label: '📊 Dashboard mGlobal' },
-    { id: 'suivi', label: '🧾 Suivi des bons' },
-    { id: 'bons', label: '📤 Bons / Pesées' },
-    { id: 'clients', label: '👥 Clients' },
-    { id: 'fournisseurs', label: '🚚 Fournisseurs' },
-    { id: 'stock', label: '📦 Stock / Produits' },
-    { id: 'gros', label: '🧱 Ventes en gros' },
-    { id: 'facturation', label: '🧾 Facturation' },
-    { id: 'relicat', label: '💳 Relicat / Créances' },
-    { id: 'compta', label: '💰 Comptabilité' },
-    { id: 'rapports', label: '📈 Rapports' }
-  ];
-  if (role === 'admin') base.push({ id: 'users', label: '🔑 Utilisateurs & rôles' });
+  // Superviseur : consultation (dashboard, suivi, rapports, comptabilité).
+  if (role === 'superviseur') {
+    return [
+      { id: 'dashboard', label: '📊 Dashboard mGlobal' },
+      { id: 'suivi', label: '🧾 Suivi des bons' },
+      { id: 'compta', label: '💰 Comptabilité' },
+      { id: 'rapports', label: '📈 Rapports' }
+    ];
+  }
+  const M = {
+    dashboard:    { id: 'dashboard', label: '📊 Dashboard mGlobal' },
+    suivi:        { id: 'suivi', label: '🧾 Suivi des bons' },
+    bons:         { id: 'bons', label: '📤 Bons / Pesées' },
+    clients:      { id: 'clients', label: '👥 Clients' },
+    fournisseurs: { id: 'fournisseurs', label: '🚚 Fournisseurs' },
+    stock:        { id: 'stock', label: '📦 Produits & Tarifs' },
+    gros:         { id: 'gros', label: '🧱 Ventes en gros' },
+    facturation:  { id: 'facturation', label: '🧾 Facturation' },
+    relicat:      { id: 'relicat', label: '💳 Relicat / Créances' },
+    compta:       { id: 'compta', label: '💰 Comptabilité' },
+    rapports:     { id: 'rapports', label: '📈 Rapports' }
+  };
+  // Comptable : tout le cycle commercial & comptable (pas d'admin utilisateurs).
+  if (role === 'comptable') {
+    return [M.dashboard, M.suivi, M.clients, M.fournisseurs, M.stock, M.gros,
+      M.facturation, M.relicat, M.compta, M.rapports];
+  }
+  // Assistante : saisie opérationnelle (bons, clients, fournisseurs, stock, facturation).
+  if (role === 'assistante') {
+    return [M.dashboard, M.suivi, M.bons, M.clients, M.fournisseurs, M.stock, M.gros,
+      M.facturation, M.relicat];
+  }
+  // Admin (et opérateur hérité) : accès complet.
+  const base = [M.dashboard, M.suivi, M.bons, M.clients, M.fournisseurs, M.stock, M.gros,
+    M.facturation, M.relicat, M.compta, M.rapports];
+  if (role === 'admin') base.push(
+    { id: 'parametres', label: '🏢 Paramètres facturation' },
+    { id: 'users', label: '🔑 Utilisateurs & rôles' });
   return base;
 }
 
@@ -88,18 +113,33 @@ function enterApp() {
     b.onclick = () => go(m.id);
     nav.appendChild(b);
   }
+  S.history = [];
+  const back = $('btnBack'); if (back) back.onclick = goBack;
   go(u.role === 'superadmin' ? 'admin' : 'dashboard');
   connectWS();
 }
 
-function go(page) {
+// Historique de navigation (pour le bouton « Retour »).
+S.history = [];
+function go(page, fromBack = false) {
+  if (!fromBack && S.page && S.page !== page) S.history.push(S.page);
   S.page = page;
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   if (S.liveTimer) { clearInterval(S.liveTimer); S.liveTimer = null; }
+  updateBackBtn();
   ({ dashboard: pageDashboard, suivi: pageSuivi, bons: pageBons, clients: pageClients,
      fournisseurs: pageFournisseurs, stock: pageStock, gros: pageGros,
      facturation: pageFacturation, relicat: pageRelicat, compta: pageCompta,
-     rapports: pageRapports, users: pageUsers, admin: pageAdmin }[page] || pageDashboard)();
+     rapports: pageRapports, users: pageUsers, admin: pageAdmin,
+     parametres: pageParametres }[page] || pageDashboard)();
+}
+function goBack() {
+  const prev = S.history.pop();
+  if (prev) go(prev, true);
+}
+function updateBackBtn() {
+  const b = $('btnBack'); if (!b) return;
+  b.style.display = S.history.length ? 'inline-flex' : 'none';
 }
 
 /* ───────────── Dashboard commun + live ───────────── */
@@ -492,34 +532,41 @@ window.delFournisseur = async (id) => {
   catch (e) { toast(e.message, true); }
 };
 
-/* ───────────── Stock / Produits ───────────── */
+/* ───────────── Produits & Tarifs (catalogue : prix + TVA) ───────────── */
 let _produits = [], _fournisseurs = [];
 async function pageStock() {
-  $('pageTitle').textContent = 'Stock / Produits';
+  $('pageTitle').textContent = 'Produits & Tarifs';
   const c = $('content');
   try { _fournisseurs = await api('/fournisseurs'); } catch { _fournisseurs = []; }
   const frOpts = `<option value="">— Fournisseur —</option>` +
     _fournisseurs.map(f => `<option value="${f.id}">${esc(f.nom)}</option>`).join('');
-  c.innerHTML = `<div class="panel"><h3>Nouveau produit</h3>
-    <div class="filters">
-      <span><label>Nom</label><input id="pNom" placeholder="Ciment, sable…"></span>
-      <span><label>Unité</label><input id="pUnite" value="t" style="width:60px"></span>
+  c.innerHTML = `<div class="panel"><h3>Nouveau produit / article</h3>
+    <div class="hint">Définissez le prix de vente unitaire (HT) et le taux de TVA : ils seront
+      chargés automatiquement dans les factures.</div>
+    <div class="formgrid" style="margin-top:10px">
+      <span><label>Désignation</label><input id="pNom" placeholder="Ciment, sable…"></span>
+      <span><label>Référence</label><input id="pRef" placeholder="Code article (optionnel)"></span>
+      <span><label>Unité</label><input id="pUnite" value="t" style="width:70px"></span>
       <span><label>Stock initial</label><input id="pStock" type="number" step="0.001" value="0"></span>
       <span><label>Seuil alerte</label><input id="pAlerte" type="number" step="0.001" value="10"></span>
       <span><label>Prix achat</label><input id="pAchat" type="number" step="0.01" value="0"></span>
+      <span><label>Prix vente HT</label><input id="pVenteHT" type="number" step="0.01" value="0"></span>
       <span><label>Prix vente gros</label><input id="pVente" type="number" step="0.01" value="0"></span>
+      <span><label>TVA (%)</label><input id="pTva" type="number" step="0.1" value="18"></span>
       <span><label>Fournisseur</label><select id="pFour">${frOpts}</select></span>
-      <button class="btn sec" id="pAdd">Ajouter</button>
-    </div></div>
-    <div class="panel"><h3>Catalogue & stock</h3><div id="pTable"><div class="hint">Chargement…</div></div></div>`;
+    </div>
+    <div style="margin-top:10px"><button class="btn" id="pAdd">Ajouter au catalogue</button></div></div>
+    <div class="panel"><h3>Catalogue, tarifs & stock</h3><div id="pTable"><div class="hint">Chargement…</div></div></div>`;
   $('pAdd').onclick = async () => {
-    if (!$('pNom').value.trim()) return toast('Le nom est requis', true);
+    if (!$('pNom').value.trim()) return toast('La désignation est requise', true);
     try {
       await api('/produits', { method: 'POST', body: JSON.stringify({
-        nom: $('pNom').value, unite: $('pUnite').value, stock_actuel: Number($('pStock').value || 0),
-        stock_alerte: Number($('pAlerte').value || 0), prix_achat: Number($('pAchat').value || 0),
-        prix_vente_gros: Number($('pVente').value || 0), fournisseur_id: $('pFour').value || null }) });
-      toast('Produit ajouté'); $('pNom').value = ''; loadProduits();
+        nom: $('pNom').value, reference: $('pRef').value, unite: $('pUnite').value,
+        stock_actuel: Number($('pStock').value || 0), stock_alerte: Number($('pAlerte').value || 0),
+        prix_achat: Number($('pAchat').value || 0), prix_vente: Number($('pVenteHT').value || 0),
+        prix_vente_gros: Number($('pVente').value || 0), tva: Number($('pTva').value || 0),
+        fournisseur_id: $('pFour').value || null }) });
+      toast('Produit ajouté'); $('pNom').value = $('pRef').value = ''; loadProduits();
     } catch (e) { toast(e.message, true); }
   };
   loadProduits();
@@ -528,20 +575,54 @@ async function loadProduits() {
   try {
     _produits = await api('/produits');
     $('pTable').innerHTML = _produits.length ? `<table>
-      <tr><th>Produit</th><th>Stock</th><th>Seuil</th><th>Prix achat</th><th>Vente gros</th><th>Fournisseur</th><th></th></tr>
+      <tr><th>Produit</th><th>Réf.</th><th>Stock</th><th>Prix achat</th><th>Vente HT</th><th>TVA</th><th>Vente gros</th><th>Fournisseur</th><th></th></tr>
       ${_produits.map(p => `<tr>
-        <td>${esc(p.nom)}</td>
+        <td>${esc(p.nom)}</td><td>${esc(p.reference || '—')}</td>
         <td class="${p.stock_actuel <= p.stock_alerte ? 'neg' : ''}">${fmt(p.stock_actuel)} ${esc(p.unite)}
           ${p.stock_actuel <= p.stock_alerte ? ' ⚠' : ''}</td>
-        <td>${fmt(p.stock_alerte)}</td><td>${money(p.prix_achat)}</td><td>${money(p.prix_vente_gros)}</td>
+        <td>${money(p.prix_achat)}</td><td>${money(p.prix_vente)}</td><td>${fmt(p.tva, 1)} %</td>
+        <td>${money(p.prix_vente_gros)}</td>
         <td>${esc(p.fournisseur_nom || '—')}</td>
         <td class="row-actions">
+          <button class="btn sec" onclick="editProduit(${p.id})">Modifier</button>
           <button class="btn sec" onclick="approvProduit(${p.id})">Approvisionner</button>
           <button class="btn danger" onclick="delProduit(${p.id})">Suppr.</button>
         </td></tr>`).join('')}</table>`
       : '<div class="hint">Aucun produit pour le moment.</div>';
   } catch (e) { toast(e.message, true); }
 }
+window.editProduit = (id) => {
+  const p = _produits.find(x => x.id === id); if (!p) return;
+  const frOpts = `<option value="">— Fournisseur —</option>` +
+    _fournisseurs.map(f => `<option value="${f.id}" ${f.id === p.fournisseur_id ? 'selected' : ''}>${esc(f.nom)}</option>`).join('');
+  $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+    <div class="modal"><div class="modal-head"><h3>Modifier ${esc(p.nom)}</h3>
+      <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body"><div class="formgrid">
+        <span><label>Désignation</label><input id="epNom" value="${esc(p.nom)}"></span>
+        <span><label>Référence</label><input id="epRef" value="${esc(p.reference || '')}"></span>
+        <span><label>Unité</label><input id="epUnite" value="${esc(p.unite)}" style="width:70px"></span>
+        <span><label>Seuil alerte</label><input id="epAlerte" type="number" step="0.001" value="${p.stock_alerte}"></span>
+        <span><label>Prix achat</label><input id="epAchat" type="number" step="0.01" value="${p.prix_achat}"></span>
+        <span><label>Prix vente HT</label><input id="epVenteHT" type="number" step="0.01" value="${p.prix_vente}"></span>
+        <span><label>Prix vente gros</label><input id="epVente" type="number" step="0.01" value="${p.prix_vente_gros}"></span>
+        <span><label>TVA (%)</label><input id="epTva" type="number" step="0.1" value="${p.tva}"></span>
+        <span><label>Fournisseur</label><select id="epFour">${frOpts}</select></span>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn sec" onclick="document.querySelector('.modal-bg').remove()">← Retour</button>
+        <button class="btn" id="epSave">Enregistrer</button></div></div></div></div>`;
+  $('epSave').onclick = async () => {
+    try {
+      await api('/produits/' + id, { method: 'PUT', body: JSON.stringify({
+        nom: $('epNom').value, reference: $('epRef').value, unite: $('epUnite').value,
+        stock_alerte: Number($('epAlerte').value || 0), prix_achat: Number($('epAchat').value || 0),
+        prix_vente: Number($('epVenteHT').value || 0), prix_vente_gros: Number($('epVente').value || 0),
+        tva: Number($('epTva').value || 0), fournisseur_id: $('epFour').value || null }) });
+      toast('Produit modifié'); document.querySelector('.modal-bg').remove(); loadProduits();
+    } catch (e) { toast(e.message, true); }
+  };
+};
 window.approvProduit = async (id) => {
   const q = prompt('Quantité reçue :', ''); if (q === null) return;
   const pa = prompt('Prix d\'achat unitaire :', ''); if (pa === null) return;
@@ -603,44 +684,177 @@ window.enlever = async (id, restant) => {
     toast('Enlèvement enregistré (stock déduit)'); loadGros(); } catch (e) { toast(e.message, true); }
 };
 
-/* ───────────── Facturation ───────────── */
+/* ───────────── Facturation (n° de bon = clé maîtresse, lignes + TVA) ───────────── */
+let _faClients = [], _faProduits = [], _faLignes = [];
 async function pageFacturation() {
   $('pageTitle').textContent = 'Facturation';
   const c = $('content');
-  let clients = [];
-  try { clients = await api('/clients'); } catch {}
-  c.innerHTML = `<div class="panel"><h3>Nouvelle facture</h3>
-    <div class="filters">
-      <span><label>Client</label><select id="faClient">
-        <option value="">— Sans client —</option>
-        ${clients.map(c => `<option value="${c.id}">${esc(c.nom)}</option>`).join('')}</select></span>
-      <span><label>Montant total</label><input id="faTotal" type="number" step="0.01" value="0"></span>
-      <span><label>Montant réglé</label><input id="faPaye" type="number" step="0.01" value="0"></span>
-      <span style="flex:1"><label>Note</label><input id="faNote" placeholder="Observation (optionnel)"></span>
-      <button class="btn sec" id="faAdd">Émettre</button>
+  try { [_faClients, _faProduits] = await Promise.all([api('/clients'), api('/produits')]); }
+  catch { _faClients = []; _faProduits = []; }
+  _faLignes = [];
+  const clOpts = `<option value="">— Sans client —</option>` +
+    _faClients.map(x => `<option value="${x.id}">${esc(x.nom)}</option>`).join('');
+  c.innerHTML = `
+    <div class="panel"><h3>Charger un bon (clé maîtresse)</h3>
+      <div class="hint">Saisissez le numéro du bon : le client, le produit, la quantité pesée,
+        le prix unitaire et la TVA sont chargés automatiquement dans la facture.</div>
+      <div class="filters" style="margin-top:10px">
+        <span><label>N° de bon</label><input id="faBon" placeholder="Ex : 12 ou BC-1-0012"></span>
+        <button class="btn" id="faLoadBon">📥 Charger le bon</button>
+        <span id="faBonInfo" class="hint" style="align-self:center"></span>
+      </div></div>
+
+    <div class="panel"><h3>Nouvelle facture</h3>
+      <div class="formgrid">
+        <span><label>Client</label><select id="faClient">${clOpts}</select></span>
+        <span><label>N° de bon (réf.)</label><input id="faBonRef" placeholder="Optionnel"></span>
+        <span><label>Échéance</label><input id="faEch" type="date"></span>
+        <span><label>Mode de règlement</label><input id="faMode" placeholder="Espèces, virement…"></span>
+      </div>
+
+      <h4 style="margin:16px 0 6px">Articles</h4>
+      <div id="faLignesBox"></div>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn sec" id="faAddLigne">+ Ajouter une ligne</button>
+        <button class="btn sec" id="faAddCat">+ Depuis le catalogue</button>
+      </div>
+
+      <div class="formgrid" style="margin-top:14px">
+        <span><label>Remise globale (%)</label><input id="faRemise" type="number" step="0.1" value="0"></span>
+        <span><label>Montant réglé</label><input id="faPaye" type="number" step="0.01" value="0"></span>
+        <span style="flex:1"><label>Note / observation</label><input id="faNote" placeholder="Optionnel"></span>
+      </div>
+
+      <div class="fa-totaux" id="faTotaux"></div>
+      <div style="margin-top:12px"><button class="btn" id="faAdd">🧾 Émettre la facture</button></div>
+      <div class="hint">Le reste à payer alimente la dette du client ; un trop-perçu alimente son relicat.</div>
     </div>
-    <div class="hint">Le reste à payer alimente automatiquement la dette du client (ou le relicat si trop-perçu).</div></div>
     <div class="panel"><h3>Factures émises</h3><div id="faTable"><div class="hint">Chargement…</div></div></div>`;
-  $('faAdd').onclick = async () => {
-    try { const r = await api('/factures', { method: 'POST', body: JSON.stringify({
-      client_id: $('faClient').value || null, montant_total: Number($('faTotal').value || 0),
-      montant_paye: Number($('faPaye').value || 0), note: $('faNote').value }) });
-      toast(`Facture ${r.numero} émise`); $('faTotal').value = $('faPaye').value = '0'; $('faNote').value = ''; loadFactures(); }
-    catch (e) { toast(e.message, true); }
-  };
+
+  $('faLoadBon').onclick = chargerBonFacture;
+  $('faBon').addEventListener('keydown', (e) => { if (e.key === 'Enter') chargerBonFacture(); });
+  $('faAddLigne').onclick = () => { _faLignes.push({ designation: '', quantite: 1, unite: '', prix_unitaire: 0, remise: 0, tva: 18 }); renderLignes(); };
+  $('faAddCat').onclick = ajouterDepuisCatalogue;
+  ['faRemise', 'faPaye'].forEach(id => $(id).addEventListener('input', renderTotaux));
+  $('faAdd').onclick = emettreFacture;
+  renderLignes();
   loadFactures();
 }
+
+function renderLignes() {
+  const box = $('faLignesBox'); if (!box) return;
+  if (!_faLignes.length) { box.innerHTML = '<div class="hint">Aucune ligne. Chargez un bon ou ajoutez une ligne.</div>'; renderTotaux(); return; }
+  box.innerHTML = `<table class="fa-lignes"><tr>
+    <th>Désignation</th><th>Qté</th><th>Unité</th><th>P.U. HT</th><th>Remise %</th><th>TVA %</th><th>Total HT</th><th></th></tr>
+    ${_faLignes.map((l, i) => {
+      const ht = (Number(l.quantite) || 0) * (Number(l.prix_unitaire) || 0) * (1 - (Number(l.remise) || 0) / 100);
+      return `<tr>
+        <td><input value="${esc(l.designation)}" oninput="majLigne(${i},'designation',this.value)" style="min-width:160px"></td>
+        <td><input type="number" step="0.001" value="${l.quantite}" oninput="majLigne(${i},'quantite',this.value)" style="width:80px"></td>
+        <td><input value="${esc(l.unite || '')}" oninput="majLigne(${i},'unite',this.value)" style="width:56px"></td>
+        <td><input type="number" step="0.01" value="${l.prix_unitaire}" oninput="majLigne(${i},'prix_unitaire',this.value)" style="width:110px"></td>
+        <td><input type="number" step="0.1" value="${l.remise || 0}" oninput="majLigne(${i},'remise',this.value)" style="width:72px"></td>
+        <td><input type="number" step="0.1" value="${l.tva}" oninput="majLigne(${i},'tva',this.value)" style="width:72px"></td>
+        <td class="r">${money(ht)}</td>
+        <td><button class="btn danger" onclick="suppLigne(${i})">✕</button></td></tr>`;
+    }).join('')}</table>`;
+  renderTotaux();
+}
+window.majLigne = (i, champ, val) => { _faLignes[i][champ] = (champ === 'designation' || champ === 'unite') ? val : Number(val || 0); renderTotaux(); };
+window.suppLigne = (i) => { _faLignes.splice(i, 1); renderLignes(); };
+
+function calcTotaux() {
+  let ht = 0, tva = 0;
+  for (const l of _faLignes) {
+    const base = (Number(l.quantite) || 0) * (Number(l.prix_unitaire) || 0) * (1 - (Number(l.remise) || 0) / 100);
+    ht += base; tva += base * (Number(l.tva) || 0) / 100;
+  }
+  const remG = Number($('faRemise')?.value || 0);
+  const ratio = 1 - remG / 100;
+  ht *= ratio; tva *= ratio;
+  return { ht, tva, ttc: ht + tva };
+}
+function renderTotaux() {
+  const box = $('faTotaux'); if (!box) return;
+  const t = calcTotaux();
+  const paye = Number($('faPaye')?.value || 0);
+  const reste = t.ttc - paye;
+  box.innerHTML = `
+    <div class="row"><span>Total HT</span><b>${money(t.ht)}</b></div>
+    <div class="row"><span>Total TVA</span><b>${money(t.tva)}</b></div>
+    <div class="row ttc"><span>NET À PAYER (TTC)</span><b>${money(t.ttc)}</b></div>
+    <div class="row ${reste > 0 ? 'neg' : 'pos'}"><span>${reste >= 0 ? 'Reste à payer' : 'Trop-perçu'}</span><b>${money(Math.abs(reste))}</b></div>`;
+}
+
+async function chargerBonFacture() {
+  const num = $('faBon').value.trim();
+  if (!num) return toast('Saisissez un numéro de bon', true);
+  try {
+    const d = await api('/factures/depuis-bon/' + encodeURIComponent(num));
+    _faLignes = d.lignes.map(l => ({ ...l }));
+    if (d.client) $('faClient').value = String(d.client.id);
+    $('faBonRef').value = d.bon.reference || String(d.bon.numero || num);
+    const info = $('faBonInfo');
+    info.innerHTML = `Bon #${esc(String(d.bon.numero ?? ''))} — ${esc(d.bon.client || '—')} · ${esc(d.bon.produit || '—')} · ${fmt(d.bon.quantite)} ${esc(d.bon.unite || '')}`
+      + (d.dejaFacture ? ` <span class="neg">⚠ déjà facturé (${esc(d.dejaFacture)})</span>` : '');
+    renderLignes();
+    toast('Bon chargé dans la facture');
+  } catch (e) { toast(e.message, true); $('faBonInfo').textContent = ''; }
+}
+
+function ajouterDepuisCatalogue() {
+  if (!_faProduits.length) return toast('Aucun produit au catalogue', true);
+  const opts = _faProduits.map(p => `<option value="${p.id}">${esc(p.nom)} — ${money(p.prix_vente)} HT (TVA ${fmt(p.tva, 1)}%)</option>`).join('');
+  $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+    <div class="modal"><div class="modal-head"><h3>Ajouter un article</h3>
+      <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body"><div class="formgrid">
+        <span><label>Produit</label><select id="catProd">${opts}</select></span>
+        <span><label>Quantité</label><input id="catQte" type="number" step="0.001" value="1"></span>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn sec" onclick="document.querySelector('.modal-bg').remove()">← Retour</button>
+        <button class="btn" id="catAdd">Ajouter</button></div></div></div></div>`;
+  $('catAdd').onclick = () => {
+    const p = _faProduits.find(x => x.id === Number($('catProd').value)); if (!p) return;
+    _faLignes.push({ produit_id: p.id, designation: p.nom, quantite: Number($('catQte').value || 1),
+      unite: p.unite, prix_unitaire: p.prix_vente || p.prix_vente_gros || 0, remise: 0, tva: p.tva });
+    document.querySelector('.modal-bg').remove(); renderLignes();
+  };
+}
+
+async function emettreFacture() {
+  if (!_faLignes.length) return toast('Ajoutez au moins une ligne', true);
+  try {
+    const r = await api('/factures', { method: 'POST', body: JSON.stringify({
+      client_id: $('faClient').value || null, numero_bon: $('faBonRef').value || null,
+      echeance: $('faEch').value || null, mode_paiement: $('faMode').value || null,
+      remise_globale: Number($('faRemise').value || 0), montant_paye: Number($('faPaye').value || 0),
+      note: $('faNote').value, lignes: _faLignes }) });
+    toast(`Facture ${r.numero} émise`);
+    _faLignes = []; $('faBon').value = $('faBonRef').value = $('faNote').value = ''; $('faPaye').value = '0';
+    $('faBonInfo').textContent = ''; renderLignes(); loadFactures();
+    imprimerFacture(r.id);
+  } catch (e) { toast(e.message, true); }
+}
+
+const FA_STATUT = { emise: ['Émise', 'st-recu'], partielle: ['Partielle', 'st-encours'], payee: ['Payée', 'st-termine'], annulee: ['Annulée', 'st-annule'] };
 async function loadFactures() {
   try {
     const rows = await api('/factures');
     $('faTable').innerHTML = rows.length ? `<table>
-      <tr><th>N°</th><th>Date</th><th>Client</th><th>Total</th><th>Réglé</th><th>Reste</th><th></th></tr>
-      ${rows.map(f => `<tr>
-        <td>${esc(f.numero)}</td><td>${esc((f.date || '').slice(0, 16))}</td><td>${esc(f.client_nom || '—')}</td>
-        <td>${money(f.montant_total)}</td><td>${money(f.montant_paye)}</td>
+      <tr><th>N°</th><th>Date</th><th>Bon</th><th>Client</th><th>HT</th><th>TVA</th><th>TTC</th><th>Réglé</th><th>Reste</th><th>Statut</th><th></th></tr>
+      ${rows.map(f => {
+        const s = FA_STATUT[f.statut] || ['—', ''];
+        return `<tr>
+        <td>${esc(f.numero)}</td><td>${esc((f.date || '').slice(0, 16))}</td><td>${esc(f.numero_bon || '—')}</td>
+        <td>${esc(f.client_nom_ref || f.client_nom || '—')}</td>
+        <td>${money(f.montant_ht)}</td><td>${money(f.montant_tva)}</td><td>${money(f.montant_total)}</td>
+        <td>${money(f.montant_paye)}</td>
         <td class="${f.relicat > 0 ? 'neg' : 'pos'}">${money(f.relicat)}</td>
+        <td><span class="badge ${s[1]}">${s[0]}</span></td>
         <td class="row-actions"><button class="btn sec" onclick="imprimerFacture(${f.id})">Imprimer</button></td>
-      </tr>`).join('')}</table>` : '<div class="hint">Aucune facture émise.</div>';
+      </tr>`; }).join('')}</table>` : '<div class="hint">Aucune facture émise.</div>';
   } catch (e) { toast(e.message, true); }
 }
 window.imprimerFacture = (id) => window.open(`/api/factures/${id}/imprimer?token=${encodeURIComponent(S.token)}`, '_blank');
@@ -673,6 +887,39 @@ window.reglerClient = async (id) => {
   try { await api('/relicat/reglement', { method: 'POST', body: JSON.stringify({ client_id: id, montant: Number(m) }) });
     toast('Règlement enregistré'); loadRelicat(); } catch (e) { toast(e.message, true); }
 };
+
+/* ───────────── Paramètres de facturation (identité légale) ───────────── */
+async function pageParametres() {
+  $('pageTitle').textContent = 'Paramètres de facturation';
+  const c = $('content');
+  let p = {};
+  try { p = await api('/parametres'); } catch (e) { toast(e.message, true); }
+  c.innerHTML = `<div class="panel"><h3>Identité de l'entreprise (en-tête des factures)</h3>
+    <div class="hint">Ces informations apparaissent sur toutes vos factures (mentions légales).</div>
+    <div class="formgrid" style="margin-top:12px">
+      <span style="flex:1 1 100%"><label>Raison sociale</label><input id="prRS" value="${esc(p.raison_sociale || p.nom || '')}"></span>
+      <span style="flex:1 1 100%"><label>Adresse</label><input id="prAdr" value="${esc(p.adresse || '')}"></span>
+      <span><label>Ville</label><input id="prVille" value="${esc(p.ville || '')}"></span>
+      <span><label>Téléphone</label><input id="prTel" value="${esc(p.telephone || '')}"></span>
+      <span><label>Email</label><input id="prMail" value="${esc(p.email || '')}"></span>
+      <span><label>NINEA</label><input id="prNinea" value="${esc(p.ninea || '')}"></span>
+      <span><label>RCCM</label><input id="prRccm" value="${esc(p.rccm || '')}"></span>
+      <span><label>Devise</label><input id="prDev" value="${esc(p.devise || 'FCFA')}" style="width:90px"></span>
+      <span><label>TVA par défaut (%)</label><input id="prTva" type="number" step="0.1" value="${p.tva_defaut ?? 18}"></span>
+      <span style="flex:1 1 100%"><label>Pied de page facture</label><input id="prPied" value="${esc(p.pied_facture || '')}" placeholder="Mentions, conditions de règlement…"></span>
+    </div>
+    <div style="margin-top:12px"><button class="btn" id="prSave">Enregistrer</button></div></div>`;
+  $('prSave').onclick = async () => {
+    try {
+      await api('/parametres', { method: 'PUT', body: JSON.stringify({
+        raison_sociale: $('prRS').value, adresse: $('prAdr').value, ville: $('prVille').value,
+        telephone: $('prTel').value, email: $('prMail').value, ninea: $('prNinea').value,
+        rccm: $('prRccm').value, devise: $('prDev').value, tva_defaut: Number($('prTva').value || 18),
+        pied_facture: $('prPied').value }) });
+      toast('Paramètres enregistrés');
+    } catch (e) { toast(e.message, true); }
+  };
+}
 
 /* ───────────── Comptabilité ───────────── */
 async function pageCompta() {
@@ -772,7 +1019,8 @@ async function pageUsers() {
       <span><label>Nom complet</label><input id="uFull" placeholder="Nom"></span>
       <span><label>Mot de passe</label><input id="uPass" type="text" placeholder="min 6 car."></span>
       <span><label>Rôle</label><select id="uRole">
-        <option value="operateur">Opérateur</option>
+        <option value="comptable">Comptable</option>
+        <option value="assistante">Assistante</option>
         <option value="superviseur">Superviseur</option>
         <option value="admin">Administrateur</option></select></span>
       <button class="btn sec" id="uAdd">Ajouter</button>

@@ -17,8 +17,9 @@ const PROGRESSION = { en_attente: 10, recu: 35, en_cours: 60, pese: 85, termine:
 
 // Seul l'administrateur du distributeur gère les bons (modifier/annuler/supprimer).
 const estAdmin = (req) => req.user.role === 'admin';
-// La création est ouverte à l'admin et à l'opérateur (pas au superviseur).
-const peutCreer = (req) => req.user.role === 'admin' || req.user.role === 'operateur';
+// La création est ouverte à l'admin, l'assistante, le comptable (et l'opérateur,
+// rôle hérité), mais pas au superviseur (consultation uniquement).
+const peutCreer = (req) => ['admin', 'assistante', 'comptable', 'operateur'].includes(req.user.role);
 
 function mapBon(b) {
   return {

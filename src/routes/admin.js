@@ -6,7 +6,9 @@ import { newKey } from '../lib/db.js';
 const r = Router();
 r.use(requireAuth);
 
-const ROLES_DISTRIB = ['admin', 'superviseur', 'operateur'];
+// Rôles d'un espace distributeur. 'operateur' est conservé (compatibilité des
+// comptes existants) mais remplacé par 'comptable' et 'assistante' à la création.
+const ROLES_DISTRIB = ['admin', 'superviseur', 'comptable', 'assistante', 'operateur'];
 
 // ───────────── Espace : gestion des utilisateurs & rôles ─────────────
 // admin distributeur → gère SES utilisateurs ; superadmin → gère tout le monde.

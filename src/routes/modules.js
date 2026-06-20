@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import db from '../lib/db.js';
 import { customAlphabet } from 'nanoid';
-import { requireAuth, denySuperadmin, requireEspaceActif } from '../lib/auth.js';
+import { requireAuth, denySuperadmin, requireEspaceActif, requireRole } from '../lib/auth.js';
+import { factureHtml } from '../lib/facture.js';
 
 const r = Router();
 // Tous les modules métier appartiennent à un distributeur : authentification
@@ -14,6 +15,9 @@ const round2 = (v) => Math.round(v * 100) / 100;
 
 // Distributeur courant (jamais null ici : le super-admin est bloqué en amont).
 const did = (req) => req.user.did;
+
+// Identité / paramètres de facturation du distributeur courant.
+const profilDistributeur = (id) => db.prepare(`SELECT * FROM distributeurs WHERE id = ?`).get(id);
 
 // Écriture comptable interne (caisse). Centralise le journal des mouvements.
 function ecritureCompta(distributeurId, { type, categorie, montant, description, clientId, fournisseurId, factureId, par }) {
@@ -119,13 +123,16 @@ r.get('/produits', (req, res) => {
 });
 
 r.post('/produits', (req, res) => {
-  const { nom, description, unite, stock_actuel, stock_alerte, prix_achat, prix_vente_gros, fournisseur_id } = req.body || {};
+  const { nom, reference, description, unite, stock_actuel, stock_alerte,
+    prix_achat, prix_vente, prix_vente_gros, tva, fournisseur_id } = req.body || {};
   if (!nom) return res.status(400).json({ error: 'Le nom du produit est requis' });
+  const tvaDef = profilDistributeur(did(req))?.tva_defaut ?? 18;
   const info = db.prepare(`INSERT INTO produits
-    (distributeur_id, nom, description, unite, stock_actuel, stock_alerte, prix_achat, prix_vente_gros, fournisseur_id)
-    VALUES (?,?,?,?,?,?,?,?,?)`).run(did(req), nom, description || '', unite || 't',
-      num(stock_actuel), num(stock_alerte, 10), num(prix_achat), num(prix_vente_gros),
-      fournisseur_id || null);
+    (distributeur_id, nom, reference, description, unite, stock_actuel, stock_alerte,
+     prix_achat, prix_vente, prix_vente_gros, tva, fournisseur_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(did(req), nom, reference || '', description || '', unite || 't',
+      num(stock_actuel), num(stock_alerte, 10), num(prix_achat), num(prix_vente),
+      num(prix_vente_gros), tva != null ? num(tva, tvaDef) : tvaDef, fournisseur_id || null);
   res.json(db.prepare(`SELECT * FROM produits WHERE id = ?`).get(info.lastInsertRowid));
 });
 
@@ -133,11 +140,14 @@ r.put('/produits/:id', (req, res) => {
   const p = db.prepare(`SELECT * FROM produits WHERE id = ? AND distributeur_id = ?`).get(req.params.id, did(req));
   if (!p) return res.status(404).json({ error: 'Produit introuvable' });
   const b = req.body || {};
-  db.prepare(`UPDATE produits SET nom=?, description=?, unite=?, stock_alerte=?, prix_achat=?, prix_vente_gros=?, fournisseur_id=? WHERE id=?`)
-    .run(b.nom ?? p.nom, b.description ?? p.description, b.unite ?? p.unite,
+  db.prepare(`UPDATE produits SET nom=?, reference=?, description=?, unite=?, stock_alerte=?,
+      prix_achat=?, prix_vente=?, prix_vente_gros=?, tva=?, fournisseur_id=? WHERE id=?`)
+    .run(b.nom ?? p.nom, b.reference ?? p.reference, b.description ?? p.description, b.unite ?? p.unite,
       b.stock_alerte != null ? num(b.stock_alerte) : p.stock_alerte,
       b.prix_achat != null ? num(b.prix_achat) : p.prix_achat,
+      b.prix_vente != null ? num(b.prix_vente) : p.prix_vente,
       b.prix_vente_gros != null ? num(b.prix_vente_gros) : p.prix_vente_gros,
+      b.tva != null ? num(b.tva) : p.tva,
       b.fournisseur_id !== undefined ? (b.fournisseur_id || null) : p.fournisseur_id, p.id);
   res.json({ ok: true });
 });
@@ -182,51 +192,170 @@ r.get('/stocks/alertes', (req, res) => {
 // ══════════════════════════════════════════
 r.get('/factures', (req, res) => {
   res.json(db.prepare(`
-    SELECT fa.*, c.nom AS client_nom, c.immatriculation FROM factures fa
+    SELECT fa.*, c.nom AS client_nom_ref, c.immatriculation FROM factures fa
     LEFT JOIN clients c ON c.id = fa.client_id
     WHERE fa.distributeur_id = ? ORDER BY fa.date DESC, fa.id DESC LIMIT 500`).all(did(req)));
 });
 
-r.post('/factures', (req, res) => {
-  const { client_id, montant_total, montant_paye, note } = req.body || {};
-  const total = round2(num(montant_total));
-  const paye = round2(num(montant_paye));
-  if (total <= 0) return res.status(400).json({ error: 'Montant total invalide' });
+// Pré-remplissage d'une facture à partir du NUMÉRO DE BON (clé maîtresse).
+// On charge automatiquement client, produit, quantité (poids pesé), prix unitaire
+// et TVA dans des lignes prêtes à facturer.
+r.get('/factures/depuis-bon/:numero', (req, res) => {
+  const numero = String(req.params.numero || '').trim().replace(/^#/, '');
+  if (!numero) return res.status(400).json({ error: 'Numéro de bon requis' });
+  // Recherche par numéro séquentiel OU par référence (BC-...).
+  const bon = db.prepare(`SELECT * FROM bons_commande
+    WHERE distributeur_id = ? AND (CAST(numero AS TEXT) = ? OR reference = ?)
+    ORDER BY id DESC LIMIT 1`).get(did(req), numero, numero);
+  if (!bon) return res.status(404).json({ error: 'Bon introuvable dans votre espace' });
+
+  // Déjà facturé ? On le signale (sans bloquer la consultation).
+  const dejaFacture = db.prepare(`SELECT numero FROM factures WHERE distributeur_id = ? AND numero_bon = ?`)
+    .get(did(req), bon.reference || String(bon.numero));
+
+  // Quantité : poids net pesé si disponible, sinon quantité prévue.
+  const quantite = round2(num(bon.poids_net) || num(bon.quantite_prevue));
+  // Produit du catalogue (correspondance par nom) pour récupérer prix de vente + TVA.
+  const prod = bon.produit
+    ? db.prepare(`SELECT * FROM produits WHERE distributeur_id = ? AND LOWER(nom) = LOWER(?) LIMIT 1`).get(did(req), bon.produit)
+    : null;
+  // Si le bon a été pesé, on récupère le prix unitaire réel depuis la sortie associée.
+  const sortie = bon.source_sortie_id
+    ? db.prepare(`SELECT prix_unitaire, montant_total FROM sorties WHERE id = ? AND distributeur_id = ?`)
+        .get(bon.source_sortie_id, did(req))
+    : null;
+  const tvaDef = profilDistributeur(did(req))?.tva_defaut ?? 18;
+  const prixUnitaire = round2(num(sortie?.prix_unitaire) || num(prod?.prix_vente) || num(prod?.prix_vente_gros));
+  const tva = prod ? num(prod.tva, tvaDef) : tvaDef;
+  // Rapprochement client (par immatriculation puis par nom).
   let client = null;
-  if (client_id) {
-    client = db.prepare(`SELECT * FROM clients WHERE id = ? AND distributeur_id = ?`).get(client_id, did(req));
+  if (bon.immatriculation)
+    client = db.prepare(`SELECT id, nom, immatriculation FROM clients WHERE distributeur_id = ? AND immatriculation = ?`).get(did(req), bon.immatriculation);
+  if (!client && bon.client)
+    client = db.prepare(`SELECT id, nom, immatriculation FROM clients WHERE distributeur_id = ? AND LOWER(nom) = LOWER(?) LIMIT 1`).get(did(req), bon.client);
+
+  res.json({
+    bon: {
+      id: bon.id, numero: bon.numero, reference: bon.reference, statut: bon.statut,
+      client: bon.client, immatriculation: bon.immatriculation, produit: bon.produit,
+      chauffeur: bon.chauffeur, destination: bon.destination,
+      quantite, unite: prod?.unite || 't', poidsNet: bon.poids_net, numeroTicket: bon.numero_ticket
+    },
+    client,
+    dejaFacture: dejaFacture ? dejaFacture.numero : null,
+    lignes: [{
+      produit_id: prod?.id || null,
+      designation: bon.produit || 'Marchandise',
+      quantite,
+      unite: prod?.unite || 't',
+      prix_unitaire: prixUnitaire,
+      remise: 0,
+      tva
+    }]
+  });
+});
+
+// Calcule les totaux HT/TVA/TTC d'un ensemble de lignes.
+function calculerLignes(lignesBrutes, remiseGlobale = 0) {
+  const lignes = [];
+  let ht = 0, tvaTot = 0;
+  for (const l of (lignesBrutes || [])) {
+    const q = num(l.quantite), pu = num(l.prix_unitaire), remise = num(l.remise), taux = num(l.tva);
+    if (q <= 0 || !l.designation) continue;
+    const brut = q * pu;
+    const mHT = round2(brut * (1 - remise / 100));
+    const mTVA = round2(mHT * taux / 100);
+    ht += mHT; tvaTot += mTVA;
+    lignes.push({ produit_id: l.produit_id || null, designation: String(l.designation),
+      quantite: q, unite: l.unite || '', prix_unitaire: pu, remise, tva: taux,
+      montant_ht: mHT, montant_tva: mTVA, montant_ttc: round2(mHT + mTVA) });
+  }
+  const htRemise = round2(ht * (1 - num(remiseGlobale) / 100));
+  // La remise globale s'applique au HT ; la TVA est recalculée au prorata.
+  const ratio = ht > 0 ? htRemise / ht : 1;
+  const tvaFinal = round2(tvaTot * ratio);
+  return { lignes, montant_ht: htRemise, montant_tva: tvaFinal, montant_ttc: round2(htRemise + tvaFinal) };
+}
+
+r.post('/factures', (req, res) => {
+  const b = req.body || {};
+  // Deux modes : lignes détaillées (recommandé) ou montant total simple (hérité).
+  let lignesBrutes = Array.isArray(b.lignes) ? b.lignes : [];
+  const remiseGlobale = num(b.remise_globale);
+  let calc;
+  if (lignesBrutes.length) {
+    calc = calculerLignes(lignesBrutes, remiseGlobale);
+    if (!calc.lignes.length) return res.status(400).json({ error: 'Aucune ligne valide' });
+  } else {
+    const total = round2(num(b.montant_total));
+    if (total <= 0) return res.status(400).json({ error: 'Renseignez au moins une ligne ou un montant total' });
+    calc = { lignes: [], montant_ht: total, montant_tva: 0, montant_ttc: total };
+  }
+  const total = calc.montant_ttc;
+  const paye = round2(num(b.montant_paye));
+
+  let client = null;
+  if (b.client_id) {
+    client = db.prepare(`SELECT * FROM clients WHERE id = ? AND distributeur_id = ?`).get(b.client_id, did(req));
     if (!client) return res.status(404).json({ error: 'Client introuvable dans votre espace' });
   }
   const relicat = round2(total - paye); // >0 : dette ; <0 : trop-perçu
-  const seq = db.prepare(`SELECT COUNT(*) n FROM factures WHERE distributeur_id = ?`).get(did(req)).n + 1;
-  const numero = `FAC-${did(req)}-${String(seq).padStart(4, '0')}`;
+  // Numérotation conforme : FAC-AAAA-NNNN par distributeur et par année.
+  const annee = new Date().getFullYear();
+  const seq = db.prepare(`SELECT COUNT(*) n FROM factures WHERE distributeur_id = ? AND substr(date,1,4) = ?`)
+    .get(did(req), String(annee)).n + 1;
+  const numero = `FAC-${annee}-${String(seq).padStart(4, '0')}`;
+  const statut = relicat <= 0 ? 'payee' : (paye > 0 ? 'partielle' : 'emise');
 
   const tx = db.transaction(() => {
     const info = db.prepare(`INSERT INTO factures
-      (distributeur_id, numero, client_id, montant_total, montant_paye, relicat, note, cree_par)
-      VALUES (?,?,?,?,?,?,?,?)`).run(did(req), numero, client_id || null, total, paye, relicat,
-        note || '', req.user.username);
+      (distributeur_id, numero, numero_bon, client_id, client_nom, montant_ht, montant_tva,
+       montant_total, montant_paye, relicat, remise_globale, echeance, statut, mode_paiement, note, cree_par)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        did(req), numero, b.numero_bon || null, b.client_id || null,
+        client ? client.nom : (b.client_nom || null),
+        calc.montant_ht, calc.montant_tva, total, paye, relicat, remiseGlobale,
+        b.echeance || null, statut, b.mode_paiement || null, b.note || '', req.user.username);
+    const fid = info.lastInsertRowid;
+    const insL = db.prepare(`INSERT INTO facture_lignes
+      (facture_id, produit_id, designation, quantite, unite, prix_unitaire, remise, tva, montant_ht, montant_tva, montant_ttc)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+    for (const l of calc.lignes)
+      insL.run(fid, l.produit_id, l.designation, l.quantite, l.unite, l.prix_unitaire, l.remise, l.tva,
+        l.montant_ht, l.montant_tva, l.montant_ttc);
     if (client) {
       if (relicat > 0) db.prepare(`UPDATE clients SET solde_dette = solde_dette + ? WHERE id = ?`).run(relicat, client.id);
       else if (relicat < 0) db.prepare(`UPDATE clients SET solde_relicat = solde_relicat + ? WHERE id = ?`).run(Math.abs(relicat), client.id);
     }
     if (paye > 0)
       ecritureCompta(did(req), { type: 'ENTREE', categorie: 'VENTE', montant: paye,
-        description: `Encaissement facture ${numero}`, clientId: client_id || null,
-        factureId: info.lastInsertRowid, par: req.user.username });
-    return info.lastInsertRowid;
+        description: `Encaissement facture ${numero}`, clientId: b.client_id || null,
+        factureId: fid, par: req.user.username });
+    return fid;
   });
   const id = tx();
-  res.json({ ok: true, id, numero, relicat });
+  res.json({ ok: true, id, numero, relicat, montant_ht: calc.montant_ht, montant_tva: calc.montant_tva, montant_ttc: total });
 });
 
-// Facture imprimable (HTML).
+// Détail d'une facture (avec ses lignes) au format JSON.
+r.get('/factures/:id', (req, res) => {
+  const fa = db.prepare(`SELECT fa.*, c.nom AS client_nom_ref, c.immatriculation, c.telephone, c.adresse
+    FROM factures fa LEFT JOIN clients c ON c.id = fa.client_id
+    WHERE fa.id = ? AND fa.distributeur_id = ?`).get(req.params.id, did(req));
+  if (!fa) return res.status(404).json({ error: 'Facture introuvable' });
+  const lignes = db.prepare(`SELECT * FROM facture_lignes WHERE facture_id = ? ORDER BY id`).all(fa.id);
+  res.json({ ...fa, lignes });
+});
+
+// Facture imprimable (HTML) — modèle professionnel.
 r.get('/factures/:id/imprimer', (req, res) => {
-  const fa = db.prepare(`SELECT fa.*, c.nom AS client_nom, c.immatriculation, c.telephone, c.adresse
+  const fa = db.prepare(`SELECT fa.*, c.nom AS client_nom_ref, c.immatriculation, c.telephone, c.adresse
     FROM factures fa LEFT JOIN clients c ON c.id = fa.client_id
     WHERE fa.id = ? AND fa.distributeur_id = ?`).get(req.params.id, did(req));
   if (!fa) return res.status(404).send('Facture introuvable');
-  res.set('Content-Type', 'text/html; charset=utf-8').send(factureHtml(fa));
+  const lignes = db.prepare(`SELECT * FROM facture_lignes WHERE facture_id = ? ORDER BY id`).all(fa.id);
+  const vendeur = profilDistributeur(did(req));
+  res.set('Content-Type', 'text/html; charset=utf-8').send(factureHtml({ ...fa, lignes }, vendeur));
 });
 
 // Liste des clients ayant une dette ou un relicat (module gestion du relicat).
@@ -355,33 +484,31 @@ r.post('/enlevements', (req, res) => {
   res.json({ ok: true, restant: round2(cg.quantite_restante - qte) });
 });
 
-// ── Rendu HTML d'une facture imprimable ──
-function esc(x) { return String(x ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
-function fmtMoney(v) { return Number(v || 0).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
-function factureHtml(fa) {
-  const reste = Number(fa.relicat || 0);
-  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>${esc(fa.numero)}</title>
-<style>body{font-family:Arial,sans-serif;color:#111;padding:32px;max-width:720px;margin:auto;}
-.head{display:flex;justify-content:space-between;border-bottom:3px solid #111;padding-bottom:10px;}
-.title{font-size:24px;font-weight:800;}table{width:100%;border-collapse:collapse;margin-top:18px;}
-td,th{padding:8px;border-bottom:1px solid #ddd;text-align:left;}th{background:#f5f5f5;}
-.tot{text-align:right;font-size:15px;margin-top:18px;}.tot b{display:inline-block;min-width:160px;}
-@media print{button{display:none;}}</style></head><body>
-<div class="head"><div class="title">⚖ mGlobal — Facture</div>
-<div style="text-align:right"><div style="font-weight:800">${esc(fa.numero)}</div>
-<div style="color:#666">${esc((fa.date || '').slice(0, 16))}</div></div></div>
-<table><tr><th>Client</th><td>${esc(fa.client_nom || '—')}</td>
-<th>Immatriculation</th><td>${esc(fa.immatriculation || '—')}</td></tr>
-<tr><th>Téléphone</th><td>${esc(fa.telephone || '—')}</td>
-<th>Adresse</th><td>${esc(fa.adresse || '—')}</td></tr></table>
-<div class="tot">
-<div><b>Montant total :</b> ${fmtMoney(fa.montant_total)} FCFA</div>
-<div><b>Montant réglé :</b> ${fmtMoney(fa.montant_paye)} FCFA</div>
-<div style="font-weight:800;color:${reste > 0 ? '#c53030' : '#2f855a'}">
-<b>${reste >= 0 ? 'Reste à payer' : 'Trop-perçu (relicat)'} :</b> ${fmtMoney(Math.abs(reste))} FCFA</div></div>
-${fa.note ? `<p style="color:#666;margin-top:14px">${esc(fa.note)}</p>` : ''}
-<div style="text-align:center;margin-top:28px"><button onclick="window.print()">🖨 Imprimer</button></div>
-</body></html>`;
-}
+// ══════════════════════════════════════════
+// 7. PARAMÈTRES DE FACTURATION (identité légale du distributeur)
+// ══════════════════════════════════════════
+r.get('/parametres', (req, res) => {
+  const d = profilDistributeur(did(req));
+  if (!d) return res.status(404).json({ error: 'Espace introuvable' });
+  res.json({
+    id: d.id, nom: d.nom, raison_sociale: d.raison_sociale, adresse: d.adresse, ville: d.ville,
+    telephone: d.telephone, email: d.email, ninea: d.ninea, rccm: d.rccm,
+    devise: d.devise || 'FCFA', tva_defaut: d.tva_defaut ?? 18, pied_facture: d.pied_facture
+  });
+});
+
+// Seul l'administrateur de l'espace configure l'identité de facturation.
+r.put('/parametres', requireRole('admin'), (req, res) => {
+  const d = profilDistributeur(did(req));
+  if (!d) return res.status(404).json({ error: 'Espace introuvable' });
+  const b = req.body || {};
+  db.prepare(`UPDATE distributeurs SET raison_sociale=?, adresse=?, ville=?, telephone=?,
+      email=?, ninea=?, rccm=?, devise=?, tva_defaut=?, pied_facture=? WHERE id=?`)
+    .run(b.raison_sociale ?? d.raison_sociale, b.adresse ?? d.adresse, b.ville ?? d.ville,
+      b.telephone ?? d.telephone, b.email ?? d.email, b.ninea ?? d.ninea, b.rccm ?? d.rccm,
+      b.devise || d.devise || 'FCFA', b.tva_defaut != null ? num(b.tva_defaut) : (d.tva_defaut ?? 18),
+      b.pied_facture ?? d.pied_facture, d.id);
+  res.json({ ok: true });
+});
 
 export default r;
