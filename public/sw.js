@@ -1,6 +1,6 @@
 // Service worker minimal : permet l'installation de l'application (icône bureau /
 // barre des tâches) et un démarrage rapide via un cache de l'enveloppe applicative.
-const CACHE = 'mglobal-v1';
+const CACHE = 'mglobal-v2';
 const ASSETS = ['/', '/index.html', '/app.js', '/styles.css', '/logo.svg', '/manifest.json'];
 
 self.addEventListener('install', (e) => {

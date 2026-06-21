@@ -1,10 +1,13 @@
 import { Router } from 'express';
+import { customAlphabet } from 'nanoid';
 import db from '../lib/db.js';
 import { requireAuth, requireRole, hashPassword, requireEspaceActif } from '../lib/auth.js';
 import { newKey } from '../lib/db.js';
 
 const r = Router();
 r.use(requireAuth);
+
+const codeFournisseur = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
 
 // Rôles d'un espace distributeur. 'operateur' est conservé (compatibilité des
 // comptes existants) mais remplacé par 'comptable' et 'assistante' à la création.
@@ -103,6 +106,71 @@ r.patch('/distributeurs/:id', requireRole('superadmin'), (req, res) => {
   if (gele  !== undefined) db.prepare(`UPDATE distributeurs SET gele  = ? WHERE id = ?`).run(gele ? 1 : 0, d.id);
   const maj = db.prepare(`SELECT id, nom, actif, gele FROM distributeurs WHERE id = ?`).get(d.id);
   res.json({ ok: true, distributeur: maj });
+});
+
+// ───────────── Super-admin : comptes fournisseurs (login + mot de passe) ─────────────
+// Un compte fournisseur = une entité « fournisseurs » + un utilisateur (rôle 'fournisseur')
+// rattaché à un distributeur. Le fournisseur se connecte sur la page de connexion normale.
+r.get('/fournisseurs-comptes', requireRole('superadmin'), (req, res) => {
+  const rows = db.prepare(`
+    SELECT u.id AS user_id, u.username, u.full_name, u.actif, u.distributeur_id, u.fournisseur_id,
+           f.nom AS fournisseur_nom, f.code AS fournisseur_code, f.telephone, f.solde_dette,
+           d.nom AS distributeur_nom
+    FROM users u
+    JOIN fournisseurs f ON f.id = u.fournisseur_id
+    LEFT JOIN distributeurs d ON d.id = u.distributeur_id
+    WHERE u.role = 'fournisseur' ORDER BY d.nom, f.nom`).all();
+  res.json(rows);
+});
+
+r.post('/fournisseurs-comptes', requireRole('superadmin'), (req, res) => {
+  const { distributeurId, nom, telephone, adresse, username, password } = req.body || {};
+  if (!distributeurId) return res.status(400).json({ error: 'Distributeur requis' });
+  if (!nom) return res.status(400).json({ error: 'Nom du fournisseur requis' });
+  if (!username || !password) return res.status(400).json({ error: 'Identifiant et mot de passe requis' });
+  const dist = db.prepare(`SELECT id FROM distributeurs WHERE id = ?`).get(distributeurId);
+  if (!dist) return res.status(404).json({ error: 'Distributeur introuvable' });
+  if (db.prepare(`SELECT 1 FROM users WHERE username = ?`).get(String(username).trim()))
+    return res.status(409).json({ error: 'Cet identifiant existe déjà' });
+
+  let code;
+  for (let i = 0; i < 6; i++) {
+    code = 'FRN-' + codeFournisseur();
+    if (!db.prepare(`SELECT 1 FROM fournisseurs WHERE code = ?`).get(code)) break;
+  }
+  try {
+    const tx = db.transaction(() => {
+      const f = db.prepare(`INSERT INTO fournisseurs (distributeur_id, code, nom, telephone, adresse)
+        VALUES (?,?,?,?,?)`).run(distributeurId, code, nom, telephone || '', adresse || '');
+      const u = db.prepare(`INSERT INTO users (distributeur_id, fournisseur_id, username, password_hash, full_name, role)
+        VALUES (?,?,?,?,?, 'fournisseur')`)
+        .run(distributeurId, f.lastInsertRowid, String(username).trim(), hashPassword(password), nom);
+      return { fournisseurId: f.lastInsertRowid, userId: u.lastInsertRowid };
+    });
+    const ids = tx();
+    res.json({ ok: true, code, ...ids });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+r.patch('/fournisseurs-comptes/:id', requireRole('superadmin'), (req, res) => {
+  const u = db.prepare(`SELECT * FROM users WHERE id = ? AND role = 'fournisseur'`).get(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Compte fournisseur introuvable' });
+  const { actif, password, nom, telephone } = req.body || {};
+  if (actif !== undefined) db.prepare(`UPDATE users SET actif = ? WHERE id = ?`).run(actif ? 1 : 0, u.id);
+  if (password) db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`).run(hashPassword(password), u.id);
+  if (nom !== undefined) {
+    db.prepare(`UPDATE users SET full_name = ? WHERE id = ?`).run(nom, u.id);
+    db.prepare(`UPDATE fournisseurs SET nom = ? WHERE id = ?`).run(nom, u.fournisseur_id);
+  }
+  if (telephone !== undefined) db.prepare(`UPDATE fournisseurs SET telephone = ? WHERE id = ?`).run(telephone, u.fournisseur_id);
+  res.json({ ok: true });
+});
+
+r.delete('/fournisseurs-comptes/:id', requireRole('superadmin'), (req, res) => {
+  const u = db.prepare(`SELECT * FROM users WHERE id = ? AND role = 'fournisseur'`).get(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Compte fournisseur introuvable' });
+  db.prepare(`DELETE FROM users WHERE id = ?`).run(u.id);
+  res.json({ ok: true });
 });
 
 r.get('/sites', requireRole('superadmin'), (req, res) => {

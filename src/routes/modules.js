@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import db from '../lib/db.js';
 import { customAlphabet } from 'nanoid';
-import { requireAuth, denySuperadmin, requireEspaceActif, requireRole } from '../lib/auth.js';
+import { requireAuth, denySuperadmin, denyFournisseur, requireEspaceActif, requireRole } from '../lib/auth.js';
 import { factureHtml } from '../lib/facture.js';
 import { signerBon } from '../lib/signature.js';
 
@@ -14,7 +14,7 @@ const UPLOAD_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
 const r = Router();
 // Tous les modules métier appartiennent à un distributeur : authentification
 // obligatoire, aucun accès super-admin, et blocage si l'espace est gelé/désactivé.
-r.use(requireAuth, denySuperadmin, requireEspaceActif);
+r.use(requireAuth, denySuperadmin, denyFournisseur, requireEspaceActif);
 
 const codeImmat = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
 const num = (v, def = 0) => { const n = Number(v); return Number.isFinite(n) ? n : def; };

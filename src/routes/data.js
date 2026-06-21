@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db from '../lib/db.js';
-import { requireAuth, scopeDistributeur, denySuperadmin } from '../lib/auth.js';
+import { requireAuth, scopeDistributeur, denySuperadmin, denyFournisseur } from '../lib/auth.js';
 
 const r = Router();
 r.use(requireAuth);
@@ -15,7 +15,7 @@ function dateRange(req) {
 }
 
 // Liste des bons / pesées (sorties) de l'espace
-r.get('/sorties', denySuperadmin, (req, res) => {
+r.get('/sorties', denySuperadmin, denyFournisseur, (req, res) => {
   const did = scopeDistributeur(req);
   const { from, to } = dateRange(req);
   const where = did ? 'AND s.distributeur_id = @did' : '';
@@ -28,7 +28,7 @@ r.get('/sorties', denySuperadmin, (req, res) => {
 });
 
 // Liste des entrées de l'espace
-r.get('/entrees', denySuperadmin, (req, res) => {
+r.get('/entrees', denySuperadmin, denyFournisseur, (req, res) => {
   const did = scopeDistributeur(req);
   const { from, to } = dateRange(req);
   const where = did ? 'AND e.distributeur_id = @did' : '';
@@ -40,7 +40,7 @@ r.get('/entrees', denySuperadmin, (req, res) => {
 });
 
 // Suivi clients (agrégé depuis les pesées) de l'espace
-r.get('/clients-suivi', denySuperadmin, (req, res) => {
+r.get('/clients-suivi', denySuperadmin, denyFournisseur, (req, res) => {
   const did = scopeDistributeur(req);
   const where = did ? 'WHERE distributeur_id = @did' : '';
   const rows = db.prepare(`
@@ -54,7 +54,7 @@ r.get('/clients-suivi', denySuperadmin, (req, res) => {
 });
 
 // Statistiques (rapport) de l'espace pour une journée
-r.get('/stats', denySuperadmin, (req, res) => {
+r.get('/stats', denySuperadmin, denyFournisseur, (req, res) => {
   const did = scopeDistributeur(req);
   const date = req.query.date || new Date().toISOString().slice(0, 10);
   const from = date + ' 00:00:00', to = date + ' 23:59:59';
@@ -83,7 +83,7 @@ r.get('/stats', denySuperadmin, (req, res) => {
 });
 
 // Bon de pesage imprimable (HTML) — vérifie l'appartenance à l'espace
-r.get('/bon', denySuperadmin, (req, res) => {
+r.get('/bon', denySuperadmin, denyFournisseur, (req, res) => {
   const did = scopeDistributeur(req);
   const id = Number(req.query.id || 0);
   const where = did ? 'AND distributeur_id = @did' : '';
@@ -93,7 +93,7 @@ r.get('/bon', denySuperadmin, (req, res) => {
 });
 
 // Envoyer un bon à l'impression distante (relais vers le LQ-350 du site)
-r.post('/bons', denySuperadmin, (req, res) => {
+r.post('/bons', denySuperadmin, denyFournisseur, (req, res) => {
   const did = scopeDistributeur(req);
   const id = Number(req.body?.sortieId || 0);
   const where = did ? 'AND distributeur_id = @did' : '';

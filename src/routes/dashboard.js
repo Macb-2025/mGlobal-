@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db from '../lib/db.js';
-import { requireAuth, denySuperadmin } from '../lib/auth.js';
+import { requireAuth, denySuperadmin, denyFournisseur } from '../lib/auth.js';
 
 const r = Router();
 
@@ -15,7 +15,7 @@ r.get('/live', requireAuth, (req, res) => {
 
 // Dashboard mGlobal COMMUN (mêmes chiffres globaux pour les distributeurs).
 // Interdit au super-admin (pas d'accès aux données des distributeurs).
-r.get('/global', requireAuth, denySuperadmin, (req, res) => {
+r.get('/global', requireAuth, denySuperadmin, denyFournisseur, (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const month = today.slice(0, 7);
   const year = today.slice(0, 4);

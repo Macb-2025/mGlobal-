@@ -10,7 +10,8 @@ export const checkPassword = (p, hash) => bcrypt.compareSync(p, hash);
 
 export function signToken(user) {
   return jwt.sign(
-    { uid: user.id, role: user.role, did: user.distributeur_id || null, username: user.username },
+    { uid: user.id, role: user.role, did: user.distributeur_id || null,
+      fid: user.fournisseur_id || null, username: user.username },
     JWT_SECRET,
     { expiresIn: TOKEN_TTL }
   );
@@ -70,6 +71,14 @@ export function etatDistributeur(did) {
 export function denySuperadmin(req, res, next) {
   if (req.user.role === 'superadmin')
     return res.status(403).json({ error: 'Le super-admin n\'a pas accès aux données des distributeurs' });
+  next();
+}
+
+// Interdit aux comptes fournisseurs l'accès aux modules métier du distributeur :
+// un fournisseur ne dispose que de son espace dédié (/espace-fournisseur).
+export function denyFournisseur(req, res, next) {
+  if (req.user.role === 'fournisseur')
+    return res.status(403).json({ error: 'Accès réservé à l\'espace fournisseur' });
   next();
 }
 

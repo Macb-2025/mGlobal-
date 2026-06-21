@@ -51,7 +51,8 @@ function logout() {
 }
 
 const ROLE_LABEL = { superadmin: 'Super-admin mGlobal', admin: 'Administrateur',
-  superviseur: 'Superviseur', comptable: 'Comptable', assistante: 'Assistante', operateur: 'Opérateur' };
+  superviseur: 'Superviseur', comptable: 'Comptable', assistante: 'Assistante', operateur: 'Opérateur',
+  fournisseur: 'Fournisseur' };
 
 function menuFor(role) {
   // Super-admin : administration uniquement (comptes + distributeurs), aucun accès
@@ -59,8 +60,13 @@ function menuFor(role) {
   if (role === 'superadmin') {
     return [
       { id: 'admin', label: '⚙ Administration' },
-      { id: 'users', label: '🔑 Création de comptes' }
+      { id: 'users', label: '🔑 Création de comptes' },
+      { id: 'fournisseursComptes', label: '🚚 Espaces fournisseurs' }
     ];
+  }
+  // Fournisseur : son espace dédié (solde, livraisons au distributeur, historique).
+  if (role === 'fournisseur') {
+    return [{ id: 'espaceFournisseur', label: '🚚 Mon espace fournisseur' }];
   }
   // Superviseur : consultation (dashboard, suivi, rapports, comptabilité).
   if (role === 'superviseur') {
@@ -117,7 +123,9 @@ function enterApp() {
   }
   S.history = [];
   const back = $('btnBack'); if (back) back.onclick = goBack;
-  go(u.role === 'superadmin' ? 'admin' : 'dashboard');
+  const accueil = u.role === 'superadmin' ? 'admin'
+    : u.role === 'fournisseur' ? 'espaceFournisseur' : 'dashboard';
+  go(accueil);
   connectWS();
 }
 
@@ -133,7 +141,8 @@ function go(page, fromBack = false) {
      fournisseurs: pageFournisseurs, stock: pageStock, gros: pageGros,
      facturation: pageFacturation, relicat: pageRelicat, recherche: pageRecherche,
      compta: pageCompta, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
-     parametres: pageParametres }[page] || pageDashboard)();
+     parametres: pageParametres, fournisseursComptes: pageFournisseursComptes,
+     espaceFournisseur: pageEspaceFournisseur }[page] || pageDashboard)();
 }
 function goBack() {
   const prev = S.history.pop();
@@ -1499,6 +1508,142 @@ async function changePassword() {
     await api('/auth/password', { method: 'POST', body: JSON.stringify({ current, nouveau }) });
     toast('Mot de passe modifié');
     $('pwCur').value = $('pwNew').value = $('pwConf').value = '';
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ───────────── Espaces fournisseurs (super-admin) ───────────── */
+async function pageFournisseursComptes() {
+  $('pageTitle').textContent = 'Espaces fournisseurs';
+  const c = $('content');
+  let ds = [];
+  try { ds = await api('/admin/distributeurs'); } catch (e) { toast(e.message, true); }
+  c.innerHTML = `<div class="panel"><h3>Créer un compte fournisseur</h3>
+    <div class="hint">Le fournisseur se connecte sur la page de connexion habituelle avec l'identifiant
+      et le mot de passe définis ici. Sa vente/livraison alimente automatiquement le stock du distributeur.</div>
+    <div class="filters" style="margin-top:10px">
+      <span><label>Espace distributeur</label><select id="fcDistrib">
+        ${ds.map(d => `<option value="${d.id}">${esc(d.nom)}</option>`).join('')}</select></span>
+      <span><label>Nom du fournisseur</label><input id="fcNom" placeholder="Ex : Ciments du Sahel"></span>
+      <span><label>Téléphone</label><input id="fcTel" placeholder="Optionnel"></span>
+      <span><label>Identifiant</label><input id="fcUser" placeholder="login"></span>
+      <span><label>Mot de passe</label><input id="fcPass" type="text" placeholder="min 6 car."></span>
+      <button class="btn sec" id="fcAdd">Créer le compte</button>
+    </div></div>
+    <div class="panel"><h3>Comptes fournisseurs</h3><div id="fcTable"><div class="hint">Chargement…</div></div></div>`;
+  $('fcAdd').onclick = addFournisseurCompte;
+  loadFournisseursComptes();
+}
+async function loadFournisseursComptes() {
+  try {
+    const rows = await api('/admin/fournisseurs-comptes');
+    $('fcTable').innerHTML = rows.length ? `<table>
+      <tr><th>Distributeur</th><th>Fournisseur</th><th>Identifiant</th><th>Code</th><th>Solde dû</th><th>Statut</th><th></th></tr>
+      ${rows.map(u => `<tr>
+        <td>${esc(u.distributeur_nom || '—')}</td><td>${esc(u.fournisseur_nom)}</td>
+        <td>${esc(u.username)}</td><td><span class="keybox">${esc(u.fournisseur_code)}</span></td>
+        <td>${money(u.solde_dette)}</td>
+        <td><span class="tag ${u.actif ? 'on' : 'off'}">${u.actif ? 'Actif' : 'Inactif'}</span></td>
+        <td class="row-actions">
+          <button class="btn sec" onclick="resetFcPass(${u.user_id})">Mot de passe</button>
+          <button class="btn sec" onclick="toggleFc(${u.user_id},${u.actif ? 0 : 1})">${u.actif ? 'Désactiver' : 'Activer'}</button>
+          <button class="btn danger" onclick="delFc(${u.user_id})">Suppr.</button>
+        </td></tr>`).join('')}</table>`
+      : '<div class="hint">Aucun compte fournisseur pour l\'instant.</div>';
+  } catch (e) { toast(e.message, true); }
+}
+async function addFournisseurCompte() {
+  const body = {
+    distributeurId: Number($('fcDistrib').value), nom: $('fcNom').value,
+    telephone: $('fcTel').value, username: $('fcUser').value, password: $('fcPass').value
+  };
+  try {
+    const r = await api('/admin/fournisseurs-comptes', { method: 'POST', body: JSON.stringify(body) });
+    toast(`Compte créé — code ${r.code}`);
+    $('fcNom').value = $('fcTel').value = $('fcUser').value = $('fcPass').value = '';
+    loadFournisseursComptes();
+  } catch (e) { toast(e.message, true); }
+}
+window.resetFcPass = async (id) => {
+  const password = prompt('Nouveau mot de passe (min. 6 caractères) :');
+  if (!password) return;
+  try { await api('/admin/fournisseurs-comptes/' + id, { method: 'PATCH', body: JSON.stringify({ password }) });
+    toast('Mot de passe modifié'); }
+  catch (e) { toast(e.message, true); }
+};
+window.toggleFc = async (id, actif) => {
+  try { await api('/admin/fournisseurs-comptes/' + id, { method: 'PATCH', body: JSON.stringify({ actif }) });
+    loadFournisseursComptes(); }
+  catch (e) { toast(e.message, true); }
+};
+window.delFc = async (id) => {
+  if (!confirm('Supprimer ce compte fournisseur ?')) return;
+  try { await api('/admin/fournisseurs-comptes/' + id, { method: 'DELETE' }); loadFournisseursComptes(); }
+  catch (e) { toast(e.message, true); }
+};
+
+/* ───────────── Espace fournisseur (compte fournisseur) ───────────── */
+let EF = { devise: 'FCFA', catalogue: [] };
+async function pageEspaceFournisseur() {
+  $('pageTitle').textContent = 'Mon espace fournisseur';
+  const c = $('content');
+  c.innerHTML = '<div class="panel"><div class="hint">Chargement…</div></div>';
+  try {
+    const d = await api('/espace-fournisseur');
+    EF.devise = d.devise || 'FCFA'; EF.catalogue = d.catalogue || [];
+    const f = d.fournisseur, r = d.resume || {};
+    const dev = EF.devise;
+    c.innerHTML = `
+      <div class="kpis">
+        <div class="kpi"><div class="v" style="color:#b91c1c">${money(f.solde_dette)} ${dev}</div><div class="l">Solde dû par le distributeur</div></div>
+        <div class="kpi"><div class="v">${r.nbProduits || 0}</div><div class="l">Produits fournis</div></div>
+        <div class="kpi"><div class="v">${money(r.totalLivre)} ${dev}</div><div class="l">Total livré (cumul)</div></div>
+        <div class="kpi"><div class="v">${r.nbAppros || 0}</div><div class="l">Nombre de livraisons</div></div>
+      </div>
+      <div class="panel"><h3>📦 Vendre / livrer au distributeur</h3>
+        <div class="hint">La marchandise est ajoutée directement au stock du distributeur (nouvelle entrée de stock) et au solde qui vous est dû.</div>
+        <div class="filters" style="margin-top:10px">
+          <span style="min-width:220px"><label>Produit</label><select id="efProd">
+            ${EF.catalogue.map(p => `<option value="${p.id}" data-pa="${p.prix_achat || 0}">${esc(p.nom)} — stock ${money(p.stock_actuel)} ${esc(p.unite || '')}</option>`).join('')}
+          </select></span>
+          <span><label>Quantité</label><input id="efQte" type="number" step="0.001" min="0" value="0"></span>
+          <span><label>Prix unitaire (achat)</label><input id="efPu" type="number" step="0.01" min="0" value="0"></span>
+          <span style="min-width:200px"><label>Note (n° bon, transport…)</label><input id="efNote" placeholder="Optionnel"></span>
+          <button class="btn" id="efGo">✔ Enregistrer la livraison</button>
+        </div>
+        <div class="hint" style="margin-top:10px">Montant total : <b id="efTotal">0 ${dev}</b></div>
+      </div>
+      <div class="panel"><h3>Produits que je fournis</h3><div id="efProduits"></div></div>
+      <div class="panel"><h3>Historique des livraisons / approvisionnements</h3><div id="efAppros"></div></div>`;
+
+    const maj = () => { $('efTotal').textContent = money((Number($('efQte').value) || 0) * (Number($('efPu').value) || 0)) + ' ' + dev; };
+    const onProd = () => { const o = $('efProd').selectedOptions[0];
+      if (o && (!Number($('efPu').value))) $('efPu').value = o.dataset.pa || 0; maj(); };
+    $('efProd').onchange = onProd; $('efQte').oninput = maj; $('efPu').oninput = maj; onProd();
+    $('efGo').onclick = enregistrerLivraisonEF;
+
+    $('efProduits').innerHTML = (d.produits || []).length ? `<table>
+      <tr><th>Produit</th><th class="r">Stock distributeur</th><th class="r">Dernier prix d'achat</th></tr>
+      ${d.produits.map(p => `<tr><td>${esc(p.nom)}</td><td class="r">${money(p.stock_actuel)} ${esc(p.unite || '')}</td><td class="r">${money(p.prix_achat)}</td></tr>`).join('')}
+      </table>` : '<div class="hint">Aucun produit associé pour l\'instant.</div>';
+
+    $('efAppros').innerHTML = (d.approvisionnements || []).length ? `<table>
+      <tr><th>Date</th><th>Désignation</th><th class="r">Montant</th></tr>
+      ${d.approvisionnements.map(a => `<tr><td>${esc((a.date || '').slice(0, 16))}</td><td>${esc(a.description || a.categorie || '')}</td><td class="r">${money(a.montant)}</td></tr>`).join('')}
+      </table>` : '<div class="hint">Aucune livraison enregistrée.</div>';
+  } catch (e) { toast(e.message, true); c.innerHTML = `<div class="panel"><div class="hint">${esc(e.message)}</div></div>`; }
+}
+async function enregistrerLivraisonEF() {
+  const produit_id = $('efProd').value;
+  const quantite = Number($('efQte').value) || 0;
+  const prix_unitaire = Number($('efPu').value) || 0;
+  if (!produit_id) return toast('Sélectionnez un produit', true);
+  if (quantite <= 0) return toast('Quantité invalide', true);
+  if (prix_unitaire <= 0) return toast('Prix unitaire invalide', true);
+  try {
+    const r = await api('/espace-fournisseur/livraison', { method: 'POST',
+      body: JSON.stringify({ produit_id, quantite, prix_unitaire, note: $('efNote').value }) });
+    toast(r.message || 'Livraison enregistrée');
+    pageEspaceFournisseur();
   } catch (e) { toast(e.message, true); }
 }
 

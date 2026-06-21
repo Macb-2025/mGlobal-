@@ -312,6 +312,8 @@ function addColumn(table, col, ddl) {
   }
 }
 addColumn('distributeurs', 'gele', 'gele INTEGER NOT NULL DEFAULT 0');
+// Compte fournisseur (rôle 'fournisseur') rattaché à une entité fournisseur.
+addColumn('users', 'fournisseur_id', 'fournisseur_id INTEGER REFERENCES fournisseurs(id) ON DELETE CASCADE');
 addColumn('bons_commande', 'numero', 'numero INTEGER');
 addColumn('bons_commande', 'signature', 'signature TEXT');
 addColumn('bons_commande', 'signature_par', 'signature_par TEXT');

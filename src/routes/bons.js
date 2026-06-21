@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db from '../lib/db.js';
-import { requireAuth, scopeDistributeur, denySuperadmin, requireEspaceActif } from '../lib/auth.js';
+import { requireAuth, scopeDistributeur, denySuperadmin, denyFournisseur, requireEspaceActif } from '../lib/auth.js';
 import { signerBon, verifierBon } from '../lib/signature.js';
 import { emitToSites, emitToDistributeur } from '../lib/realtime.js';
 
@@ -9,6 +9,7 @@ r.use(requireAuth);
 // Les bons appartiennent aux distributeurs : aucun accès super-admin, et tout
 // est bloqué si l'espace est désactivé ou gelé par le super-admin.
 r.use(denySuperadmin);
+r.use(denyFournisseur);
 r.use(requireEspaceActif);
 
 // Libellés et progression (%) de chaque statut, pour le suivi d'avancement.
