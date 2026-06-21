@@ -86,6 +86,9 @@
       <p class="sub">Consultez votre situation, vos factures et vos livraisons en temps réel</p>
       <label for="input-immatriculation">Code / Immatriculation client</label>
       <input type="text" id="input-immatriculation" placeholder="Ex : MGL-3F2A9X" autocomplete="off">
+      <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;font-weight:500;color:var(--ink);margin-top:14px;cursor:pointer">
+        <input type="checkbox" id="chk-remember" style="width:auto;margin:0" checked>
+        Mémoriser mon code et ouvrir automatiquement mon espace</label>
       <button id="btn-login">Accéder à mon espace</button>
       <div class="err" id="auth-err"></div>
       <p class="alt">Vous êtes fournisseur ? <a href="/portail-fournisseur.html">Espace fournisseur</a></p>
@@ -103,7 +106,7 @@
     </div>
     <div class="actions" style="justify-content:flex-end;margin-bottom:18px">
       <button class="btn-print" onclick="window.print()">🖨️ Imprimer ma situation</button>
-      <button class="btn-out" onclick="location.reload()">↩ Quitter</button>
+      <button class="btn-out" onclick="deconnexion()">↩ Quitter</button>
     </div>
 
     <div class="kpis" id="kpis"></div>
@@ -152,11 +155,12 @@
     const dt = (s) => esc(String(s || '').slice(0, 16).replace('T', ' '));
 
     let DEVISE = 'FCFA';
+    const REMEMBER_KEY = 'mg_client_immat';
 
-    async function authentifier() {
+    async function authentifier(silent) {
       const immatriculation = $('input-immatriculation').value.trim();
       $('auth-err').textContent = '';
-      if (!immatriculation) { $('auth-err').textContent = 'Veuillez saisir votre code / immatriculation.'; return; }
+      if (!immatriculation) { if (!silent) $('auth-err').textContent = 'Veuillez saisir votre code / immatriculation.'; return; }
       try {
         const res = await fetch('/api/portail-public/connexion', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -164,9 +168,15 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Immatriculation introuvable');
+        if ($('chk-remember').checked) localStorage.setItem(REMEMBER_KEY, immatriculation);
+        else localStorage.removeItem(REMEMBER_KEY);
         rendre(data);
-      } catch (e) { $('auth-err').textContent = e.message; }
+      } catch (e) {
+        localStorage.removeItem(REMEMBER_KEY);
+        if (!silent) $('auth-err').textContent = e.message;
+      }
     }
+    function deconnexion() { localStorage.removeItem(REMEMBER_KEY); location.reload(); }
 
     function rendre(data) {
       $('auth-section').classList.add('d-none');
@@ -221,8 +231,14 @@
         : '<tr><td colspan="4" class="empty">Aucun compte en gros en cours.</td></tr>';
     }
 
-    $('btn-login').addEventListener('click', authentifier);
-    $('input-immatriculation').addEventListener('keydown', (e) => { if (e.key === 'Enter') authentifier(); });
+    $('btn-login').addEventListener('click', () => authentifier(false));
+    $('input-immatriculation').addEventListener('keydown', (e) => { if (e.key === 'Enter') authentifier(false); });
+
+    // Ouverture automatique si un code a été mémorisé.
+    (function autoOuverture() {
+      const saved = localStorage.getItem(REMEMBER_KEY);
+      if (saved) { $('input-immatriculation').value = saved; $('chk-remember').checked = true; authentifier(true); }
+    })();
   </script>
 </body>
 </html>
