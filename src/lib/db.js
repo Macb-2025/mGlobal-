@@ -281,6 +281,24 @@ CREATE TABLE IF NOT EXISTS enlevements (
 );
 CREATE INDEX IF NOT EXISTS idx_enl_dist ON enlevements(distributeur_id);
 
+-- Journal des mouvements de stock : chaque entrée (achat) ou sortie (vente) est
+-- tracée et reliée à une écriture comptable (entrée=dépense, sortie=revenu).
+CREATE TABLE IF NOT EXISTS mouvements_stock (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  distributeur_id INTEGER NOT NULL REFERENCES distributeurs(id) ON DELETE CASCADE,
+  produit_id      INTEGER REFERENCES produits(id) ON DELETE SET NULL,
+  sens            TEXT NOT NULL CHECK(sens IN ('IN','OUT')),
+  quantite        REAL NOT NULL DEFAULT 0,
+  prix_unitaire   REAL NOT NULL DEFAULT 0,
+  montant         REAL NOT NULL DEFAULT 0,
+  motif           TEXT,
+  reference       TEXT,
+  date            TEXT NOT NULL DEFAULT (datetime('now')),
+  cree_par        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mvt_dist ON mouvements_stock(distributeur_id);
+CREATE INDEX IF NOT EXISTS idx_mvt_prod ON mouvements_stock(produit_id);
+
 INSERT OR IGNORE INTO live (id, connected, stable, kg, valeur, unite, ts)
 VALUES (1, 0, 0, 0, 0, 't', datetime('now'));
 `);
@@ -311,6 +329,10 @@ addColumn('distributeurs', 'devise',   "devise TEXT NOT NULL DEFAULT 'FCFA'");
 addColumn('distributeurs', 'tva_defaut','tva_defaut REAL NOT NULL DEFAULT 18');
 addColumn('distributeurs', 'pied_facture', 'pied_facture TEXT');
 addColumn('distributeurs', 'logo', 'logo TEXT'); // chemin du logo (impression factures/bons)
+
+// Vente en gros : facture générée automatiquement à l'achat (lien + état facturé).
+addColumn('commandes_gros', 'facture_id', 'facture_id INTEGER');
+addColumn('commandes_gros', 'facture_numero', 'facture_numero TEXT');
 
 // Catalogue : prix de vente HT + taux de TVA + référence article.
 addColumn('produits', 'reference',  'reference TEXT');

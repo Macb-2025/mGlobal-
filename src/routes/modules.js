@@ -183,9 +183,43 @@ r.post('/produits/:id/approvisionner', (req, res) => {
     ecritureCompta(did(req), { type: 'SORTIE', categorie: 'ACHAT_STOCK', montant,
       description: `Approvisionnement ${p.nom} (${quantite} ${p.unite})`,
       fournisseurId: fournisseur_id, par: req.user.username });
+    db.prepare(`INSERT INTO mouvements_stock
+      (distributeur_id, produit_id, sens, quantite, prix_unitaire, montant, motif, cree_par)
+      VALUES (?,?,?,?,?,?,?,?)`).run(did(req), p.id, 'IN', quantite, prix_achat, montant,
+        `Approvisionnement ${p.nom}`, req.user.username);
   });
   tx();
   res.json({ ok: true, produit: db.prepare(`SELECT * FROM produits WHERE id = ?`).get(p.id) });
+});
+
+// Mouvement de stock manuel : entrée (dépense) ou sortie (revenu) hors document.
+r.post('/produits/:id/mouvement', (req, res) => {
+  const p = db.prepare(`SELECT * FROM produits WHERE id = ? AND distributeur_id = ?`).get(req.params.id, did(req));
+  if (!p) return res.status(404).json({ error: 'Produit introuvable' });
+  const sens = req.body?.sens === 'IN' ? 'IN' : (req.body?.sens === 'OUT' ? 'OUT' : null);
+  if (!sens) return res.status(400).json({ error: 'Sens invalide (IN = entrée, OUT = sortie)' });
+  const quantite = num(req.body?.quantite);
+  if (quantite <= 0) return res.status(400).json({ error: 'Quantité invalide' });
+  // Prix par défaut : achat pour une entrée, vente pour une sortie.
+  const prix = req.body?.prix_unitaire != null ? num(req.body.prix_unitaire)
+    : (sens === 'IN' ? p.prix_achat : (p.prix_vente || p.prix_vente_gros));
+  const motif = (req.body?.motif || '').toString()
+    || (sens === 'IN' ? `Entrée de stock ${p.nom}` : `Sortie de stock ${p.nom}`);
+  const tx = db.transaction(() =>
+    mouvementStock(did(req), p, sens, quantite, prix, { motif, compta: true, username: req.user.username }));
+  const montant = tx();
+  res.json({ ok: true, montant, produit: db.prepare(`SELECT * FROM produits WHERE id = ?`).get(p.id) });
+});
+
+// Historique des mouvements de stock (tous produits ou un produit donné).
+r.get('/mouvements-stock', (req, res) => {
+  const pid = req.query.produit_id ? Number(req.query.produit_id) : null;
+  const params = pid ? { did: did(req), pid } : { did: did(req) };
+  const rows = db.prepare(`SELECT m.*, p.nom AS produit_nom, p.unite FROM mouvements_stock m
+    LEFT JOIN produits p ON p.id = m.produit_id
+    WHERE m.distributeur_id = @did ${pid ? 'AND m.produit_id = @pid' : ''}
+    ORDER BY m.date DESC, m.id DESC LIMIT 500`).all(params);
+  res.json(rows);
 });
 
 r.get('/stocks/alertes', (req, res) => {
@@ -283,18 +317,40 @@ function calculerLignes(lignesBrutes, remiseGlobale = 0) {
   return { lignes, montant_ht: htRemise, montant_tva: tvaFinal, montant_ttc: round2(htRemise + tvaFinal) };
 }
 
-r.post('/factures', (req, res) => {
-  const b = req.body || {};
-  // Deux modes : lignes détaillées (recommandé) ou montant total simple (hérité).
-  let lignesBrutes = Array.isArray(b.lignes) ? b.lignes : [];
+// Mouvement de stock + écriture comptable optionnelle. À appeler DANS une transaction.
+// IN (entrée/achat) → dépense ; OUT (sortie/vente) → revenu.
+function mouvementStock(distId, prod, sens, quantite, prixUnitaire, { motif, reference, compta = true, username } = {}) {
+  const q = round2(num(quantite));
+  if (q <= 0 || !prod) return 0;
+  const pu = round2(num(prixUnitaire));
+  const montant = round2(q * pu);
+  if (sens === 'IN') {
+    db.prepare(`UPDATE produits SET stock_actuel = stock_actuel + ? WHERE id = ? AND distributeur_id = ?`).run(q, prod.id, distId);
+    if (compta) ecritureCompta(distId, { type: 'SORTIE', categorie: 'ACHAT_STOCK', montant,
+      description: motif || `Entrée de stock ${prod.nom}`, par: username });
+  } else {
+    db.prepare(`UPDATE produits SET stock_actuel = stock_actuel - ? WHERE id = ? AND distributeur_id = ?`).run(q, prod.id, distId);
+    if (compta) ecritureCompta(distId, { type: 'ENTREE', categorie: 'VENTE_STOCK', montant,
+      description: motif || `Sortie de stock ${prod.nom}`, par: username });
+  }
+  db.prepare(`INSERT INTO mouvements_stock
+    (distributeur_id, produit_id, sens, quantite, prix_unitaire, montant, motif, reference, cree_par)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(distId, prod.id, sens, q, pu, montant, motif || null, reference || null, username || null);
+  return montant;
+}
+
+// Création d'une facture (réutilisée par la facturation manuelle ET la vente en gros).
+// Doit être exécutée DANS une transaction. Lève une erreur en cas d'entrée invalide.
+function creerFacture(distId, b, username, { deduireStock = false } = {}) {
+  const lignesBrutes = Array.isArray(b.lignes) ? b.lignes : [];
   const remiseGlobale = num(b.remise_globale);
   let calc;
   if (lignesBrutes.length) {
     calc = calculerLignes(lignesBrutes, remiseGlobale);
-    if (!calc.lignes.length) return res.status(400).json({ error: 'Aucune ligne valide' });
+    if (!calc.lignes.length) throw new Error('Aucune ligne valide');
   } else {
     const total = round2(num(b.montant_total));
-    if (total <= 0) return res.status(400).json({ error: 'Renseignez au moins une ligne ou un montant total' });
+    if (total <= 0) throw new Error('Renseignez au moins une ligne ou un montant total');
     calc = { lignes: [], montant_ht: total, montant_tva: 0, montant_ttc: total };
   }
   const total = calc.montant_ttc;
@@ -302,45 +358,55 @@ r.post('/factures', (req, res) => {
 
   let client = null;
   if (b.client_id) {
-    client = db.prepare(`SELECT * FROM clients WHERE id = ? AND distributeur_id = ?`).get(b.client_id, did(req));
-    if (!client) return res.status(404).json({ error: 'Client introuvable dans votre espace' });
+    client = db.prepare(`SELECT * FROM clients WHERE id = ? AND distributeur_id = ?`).get(b.client_id, distId);
+    if (!client) throw new Error('Client introuvable dans votre espace');
   }
   const relicat = round2(total - paye); // >0 : dette ; <0 : trop-perçu
-  // Numérotation conforme : FAC-AAAA-NNNN par distributeur et par année.
   const annee = new Date().getFullYear();
   const seq = db.prepare(`SELECT COUNT(*) n FROM factures WHERE distributeur_id = ? AND substr(date,1,4) = ?`)
-    .get(did(req), String(annee)).n + 1;
+    .get(distId, String(annee)).n + 1;
   const numero = `FAC-${annee}-${String(seq).padStart(4, '0')}`;
   const statut = relicat <= 0 ? 'payee' : (paye > 0 ? 'partielle' : 'emise');
 
-  const tx = db.transaction(() => {
-    const info = db.prepare(`INSERT INTO factures
-      (distributeur_id, numero, numero_bon, client_id, client_nom, montant_ht, montant_tva,
-       montant_total, montant_paye, relicat, remise_globale, echeance, statut, mode_paiement, note, cree_par)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        did(req), numero, b.numero_bon || null, b.client_id || null,
-        client ? client.nom : (b.client_nom || null),
-        calc.montant_ht, calc.montant_tva, total, paye, relicat, remiseGlobale,
-        b.echeance || null, statut, b.mode_paiement || null, b.note || '', req.user.username);
-    const fid = info.lastInsertRowid;
-    const insL = db.prepare(`INSERT INTO facture_lignes
-      (facture_id, produit_id, designation, quantite, unite, prix_unitaire, remise, tva, montant_ht, montant_tva, montant_ttc)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
-    for (const l of calc.lignes)
-      insL.run(fid, l.produit_id, l.designation, l.quantite, l.unite, l.prix_unitaire, l.remise, l.tva,
-        l.montant_ht, l.montant_tva, l.montant_ttc);
-    if (client) {
-      if (relicat > 0) db.prepare(`UPDATE clients SET solde_dette = solde_dette + ? WHERE id = ?`).run(relicat, client.id);
-      else if (relicat < 0) db.prepare(`UPDATE clients SET solde_relicat = solde_relicat + ? WHERE id = ?`).run(Math.abs(relicat), client.id);
+  const info = db.prepare(`INSERT INTO factures
+    (distributeur_id, numero, numero_bon, client_id, client_nom, montant_ht, montant_tva,
+     montant_total, montant_paye, relicat, remise_globale, echeance, statut, mode_paiement, note, cree_par)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      distId, numero, b.numero_bon || null, b.client_id || null,
+      client ? client.nom : (b.client_nom || null),
+      calc.montant_ht, calc.montant_tva, total, paye, relicat, remiseGlobale,
+      b.echeance || null, statut, b.mode_paiement || null, b.note || '', username);
+  const fid = info.lastInsertRowid;
+  const insL = db.prepare(`INSERT INTO facture_lignes
+    (facture_id, produit_id, designation, quantite, unite, prix_unitaire, remise, tva, montant_ht, montant_tva, montant_ttc)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  for (const l of calc.lignes) {
+    insL.run(fid, l.produit_id, l.designation, l.quantite, l.unite, l.prix_unitaire, l.remise, l.tva,
+      l.montant_ht, l.montant_tva, l.montant_ttc);
+    // Suivi stock : la vente fait sortir la marchandise du stock (revenu = encaissement facture).
+    if (deduireStock && l.produit_id) {
+      const prod = db.prepare(`SELECT * FROM produits WHERE id = ? AND distributeur_id = ?`).get(l.produit_id, distId);
+      if (prod) mouvementStock(distId, prod, 'OUT', l.quantite, l.prix_unitaire,
+        { motif: `Vente facture ${numero}`, reference: numero, compta: false, username });
     }
-    if (paye > 0)
-      ecritureCompta(did(req), { type: 'ENTREE', categorie: 'VENTE', montant: paye,
-        description: `Encaissement facture ${numero}`, clientId: b.client_id || null,
-        factureId: fid, par: req.user.username });
-    return fid;
-  });
-  const id = tx();
-  res.json({ ok: true, id, numero, relicat, montant_ht: calc.montant_ht, montant_tva: calc.montant_tva, montant_ttc: total });
+  }
+  if (client) {
+    if (relicat > 0) db.prepare(`UPDATE clients SET solde_dette = solde_dette + ? WHERE id = ?`).run(relicat, client.id);
+    else if (relicat < 0) db.prepare(`UPDATE clients SET solde_relicat = solde_relicat + ? WHERE id = ?`).run(Math.abs(relicat), client.id);
+  }
+  if (paye > 0)
+    ecritureCompta(distId, { type: 'ENTREE', categorie: 'VENTE', montant: paye,
+      description: `Encaissement facture ${numero}`, clientId: b.client_id || null,
+      factureId: fid, par: username });
+  return { id: fid, numero, relicat, montant_ht: calc.montant_ht, montant_tva: calc.montant_tva, montant_ttc: total };
+}
+
+r.post('/factures', (req, res) => {
+  try {
+    const tx = db.transaction(() => creerFacture(did(req), req.body || {}, req.user.username, { deduireStock: true }));
+    const r2 = tx();
+    res.json({ ok: true, ...r2 });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // Détail d'une facture (avec ses lignes) au format JSON.
@@ -448,16 +514,63 @@ r.get('/commandes-gros', (req, res) => {
     WHERE cg.distributeur_id = ? ORDER BY cg.created_at DESC`).all(did(req)));
 });
 
+// Vente en gros : ouvre un compte prépayé, FACTURE automatiquement la marchandise
+// et DÉCLENCHE le suivi du stock (sortie immédiate). Les enlèvements ultérieurs ne
+// font que livrer la marchandise déjà vendue (pas de nouvelle écriture).
 r.post('/commandes-gros', (req, res) => {
   const { entite_type, entite_id, produit_id, quantite_totale, prix_unitaire, note } = req.body || {};
   if (!['CLIENT', 'DISTRIBUTEUR'].includes(entite_type)) return res.status(400).json({ error: 'Type d\'entité invalide' });
   const qte = num(quantite_totale);
   if (qte <= 0) return res.status(400).json({ error: 'Quantité invalide' });
-  const info = db.prepare(`INSERT INTO commandes_gros
-    (distributeur_id, entite_type, entite_id, produit_id, quantite_totale, quantite_restante, prix_unitaire, note)
-    VALUES (?,?,?,?,?,?,?,?)`).run(did(req), entite_type, num(entite_id), produit_id || null,
-      qte, qte, num(prix_unitaire), note || '');
-  res.json({ ok: true, id: info.lastInsertRowid });
+
+  const prod = produit_id
+    ? db.prepare(`SELECT * FROM produits WHERE id = ? AND distributeur_id = ?`).get(produit_id, did(req))
+    : null;
+  let client = null;
+  if (entite_type === 'CLIENT')
+    client = db.prepare(`SELECT * FROM clients WHERE id = ? AND distributeur_id = ?`).get(num(entite_id), did(req));
+  const pu = round2(num(prix_unitaire) || num(prod?.prix_vente_gros) || num(prod?.prix_vente));
+  const tvaDef = profilDistributeur(did(req))?.tva_defaut ?? 18;
+  const paiement = num(req.body?.montant_paye); // optionnel ; par défaut la vente est réglée (prépayée)
+
+  try {
+    const tx = db.transaction(() => {
+      const info = db.prepare(`INSERT INTO commandes_gros
+        (distributeur_id, entite_type, entite_id, produit_id, quantite_totale, quantite_restante, prix_unitaire, note)
+        VALUES (?,?,?,?,?,?,?,?)`).run(did(req), entite_type, num(entite_id), produit_id || null,
+          qte, qte, pu, note || '');
+      const cgId = info.lastInsertRowid;
+
+      // Suivi stock : sortie immédiate de la marchandise vendue (revenu = facture).
+      if (prod) mouvementStock(did(req), prod, 'OUT', qte, pu,
+        { motif: `Vente en gros ${prod.nom}`, reference: `GROS-${cgId}`, compta: false, username: req.user.username });
+
+      // Facturation automatique de la commande en gros.
+      let facture = null;
+      if (client) {
+        const montantTtc = round2(qte * pu * (1 + tvaDef / 100));
+        const paye = req.body?.montant_paye != null ? round2(paiement) : montantTtc; // prépayée par défaut
+        facture = creerFacture(did(req), {
+          client_id: client.id,
+          numero_bon: `GROS-${cgId}`,
+          montant_paye: paye,
+          mode_paiement: req.body?.mode_paiement || 'Prépayé (gros)',
+          note: `Vente en gros — ${prod ? prod.nom : 'marchandise'} (${qte} ${prod?.unite || 't'})`,
+          lignes: [{
+            produit_id: prod?.id || null,
+            designation: prod ? prod.nom : 'Marchandise (gros)',
+            quantite: qte, unite: prod?.unite || 't',
+            prix_unitaire: pu, remise: 0, tva: prod ? num(prod.tva, tvaDef) : tvaDef
+          }]
+        }, req.user.username, { deduireStock: false }); // stock déjà déduit ci-dessus
+        db.prepare(`UPDATE commandes_gros SET facture_id = ?, facture_numero = ? WHERE id = ?`)
+          .run(facture.id, facture.numero, cgId);
+      }
+      return { id: cgId, facture };
+    });
+    const r2 = tx();
+    res.json({ ok: true, id: r2.id, facture: r2.facture });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 r.get('/enlevements', (req, res) => {
@@ -468,7 +581,9 @@ r.get('/enlevements', (req, res) => {
     WHERE e.distributeur_id = ? ORDER BY e.date DESC LIMIT 500`).all(did(req)));
 });
 
-// Enlèvement fractionné : déduit du gros et du stock physique.
+// Enlèvement fractionné : livraison d'une marchandise DÉJÀ vendue et facturée à
+// l'ouverture du compte gros. Le stock a déjà été déduit à la vente : on ne déduit
+// donc que le solde de marchandise restant à enlever (pas de double déduction).
 r.post('/enlevements', (req, res) => {
   const cg = db.prepare(`SELECT * FROM commandes_gros WHERE id = ? AND distributeur_id = ?`)
     .get(req.body?.commande_gros_id, did(req));
@@ -482,9 +597,6 @@ r.post('/enlevements', (req, res) => {
     db.prepare(`UPDATE commandes_gros SET quantite_restante = quantite_restante - ? WHERE id = ?`).run(qte, cg.id);
     db.prepare(`INSERT INTO enlevements (distributeur_id, commande_gros_id, quantite_enlevee, operateur)
       VALUES (?,?,?,?)`).run(did(req), cg.id, qte, req.user.username);
-    if (cg.produit_id)
-      db.prepare(`UPDATE produits SET stock_actuel = stock_actuel - ? WHERE id = ? AND distributeur_id = ?`)
-        .run(qte, cg.produit_id, did(req));
   });
   tx();
   res.json({ ok: true, restant: round2(cg.quantite_restante - qte) });

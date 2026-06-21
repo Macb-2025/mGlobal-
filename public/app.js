@@ -242,6 +242,7 @@ async function pageSuivi() {
         <span><label>Quantité prévue (t)</label><input id="cbQte" type="number" step="0.001" placeholder="0"></span>
         <span style="flex:1"><label>Note</label><input id="cbNote" placeholder="Remarque (optionnel)"></span>
       </div>
+      <div id="cbVerif" class="verif-bon" style="display:none"></div>
       <div style="margin-top:10px"><button class="btn" id="cbAdd">📨 Envoyer au pont bascule</button></div>
     </div>` : ''}
     <div class="panel">
@@ -257,12 +258,61 @@ async function pageSuivi() {
       </div>
       <div id="cbTable"><div class="hint">Chargement…</div></div>
     </div>`;
-  if (canCreate) $('cbAdd').onclick = creerBon;
+  if (canCreate) {
+    $('cbAdd').onclick = creerBon;
+    let vt;
+    const trig = () => { clearTimeout(vt); vt = setTimeout(verifClientBon, 350); };
+    $('cbClient').addEventListener('input', trig);
+    $('cbImmat').addEventListener('input', trig);
+  }
   $('cbReload').onclick = loadSuivi;
   $('cbFilter').onchange = loadSuivi;
   loadSuivi();
   connectWS();
 }
+
+// Vérification automatique : le client (nom ou immatriculation) a-t-il un compte gros
+// avec solde à enlever ? → mode « enlèvement », sinon « nouveau bon ».
+let _verifGros = null;
+async function verifClientBon() {
+  const box = $('cbVerif'); if (!box) return;
+  _verifGros = null;
+  const nom = ($('cbClient')?.value || '').trim();
+  const imm = ($('cbImmat')?.value || '').trim();
+  if (!nom && !imm) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  try {
+    const d = await api('/bons-commande/verif-client?immatriculation='
+      + encodeURIComponent(imm) + '&nom=' + encodeURIComponent(nom));
+    if (d.aGros) {
+      const c = d.clients.find(x => x.gros && x.gros.length) || d.clients[0];
+      _verifGros = { client: c, gros: c.gros };
+      box.className = 'verif-bon ok';
+      box.innerHTML = `✅ <b>${esc(c.nom)}</b> (${esc(c.immatriculation)}) a un <b>compte gros</b> — `
+        + c.gros.map(g => `${esc(g.produit_nom || 'marchandise')} : <b>${fmt(g.quantite_restante)} ${esc(g.unite || '')}</b> à enlever`).join(' · ')
+        + ` → <b>mode enlèvement</b>. `
+        + c.gros.map(g => `<button class="btn sec" onclick="enleverDepuisBon(${g.id},${g.quantite_restante})">Enlèvement (${esc(g.produit_nom || '')})</button>`).join(' ');
+      box.style.display = 'block';
+    } else if (d.clients && d.clients.length) {
+      box.className = 'verif-bon';
+      box.innerHTML = `ℹ ${d.clients.length > 1 ? d.clients.length + ' clients trouvés avec ce nom — ' : ''}`
+        + `pas de compte gros actif → <b>nouveau bon</b> (suivi + facturation automatiques).`;
+      box.style.display = 'block';
+    } else {
+      box.className = 'verif-bon';
+      box.innerHTML = `ℹ Nouveau client / pas de compte gros → <b>nouveau bon</b> (suivi + facturation automatiques).`;
+      box.style.display = 'block';
+    }
+  } catch { box.style.display = 'none'; }
+}
+window.enleverDepuisBon = async (id, restant) => {
+  const q = prompt(`Quantité à enlever (max ${restant}) :`, String(restant));
+  if (q === null) return;
+  try {
+    await api('/enlevements', { method: 'POST', body: JSON.stringify({ commande_gros_id: id, quantite_enlevee: Number(q) }) });
+    toast('Enlèvement enregistré sur le compte gros (déjà facturé)');
+    verifClientBon();
+  } catch (e) { toast(e.message, true); }
+};
 
 async function creerBon() {
   const body = {
@@ -442,7 +492,8 @@ async function pageClients() {
       <span style="flex:1"><label>Adresse</label><input id="clAdr" placeholder="Adresse"></span>
       <button class="btn sec" id="clAdd">Ajouter</button>
     </div>
-    <div class="hint">Un code d'accès portail (immatriculation) est généré automatiquement.</div></div>
+    <div class="hint">Plusieurs clients peuvent porter le même nom : un code d'accès unique
+      (immatriculation) est généré automatiquement et sert de clé d'identification.</div></div>
     <div class="panel"><h3>Mes clients</h3><div id="clTable"><div class="hint">Chargement…</div></div></div>`;
   $('clAdd').onclick = async () => {
     if (!$('clNom').value.trim()) return toast('Le nom est requis', true);
@@ -559,7 +610,9 @@ async function pageStock() {
       <span><label>Fournisseur</label><select id="pFour">${frOpts}</select></span>
     </div>
     <div style="margin-top:10px"><button class="btn" id="pAdd">Ajouter au catalogue</button></div></div>
-    <div class="panel"><h3>Catalogue, tarifs & stock</h3><div id="pTable"><div class="hint">Chargement…</div></div></div>`;
+    <div class="panel"><h3>Catalogue, tarifs & stock</h3><div id="pTable"><div class="hint">Chargement…</div></div></div>
+    <div class="panel"><h3>Journal des mouvements de stock (entrée = dépense · sortie = revenu)</h3>
+      <div id="pMvt"><div class="hint">Chargement…</div></div></div>`;
   $('pAdd').onclick = async () => {
     if (!$('pNom').value.trim()) return toast('La désignation est requise', true);
     try {
@@ -589,11 +642,61 @@ async function loadProduits() {
         <td class="row-actions">
           <button class="btn sec" onclick="editProduit(${p.id})">Modifier</button>
           <button class="btn sec" onclick="approvProduit(${p.id})">Approvisionner</button>
+          <button class="btn sec" onclick="mouvementProduit(${p.id})">Mouvement</button>
           <button class="btn danger" onclick="delProduit(${p.id})">Suppr.</button>
         </td></tr>`).join('')}</table>`
       : '<div class="hint">Aucun produit pour le moment.</div>';
   } catch (e) { toast(e.message, true); }
+  loadMouvements();
 }
+async function loadMouvements() {
+  const box = $('pMvt'); if (!box) return;
+  try {
+    const rows = await api('/mouvements-stock');
+    box.innerHTML = rows.length ? `<table>
+      <tr><th>Date</th><th>Produit</th><th>Sens</th><th>Qté</th><th>P.U.</th><th>Montant</th><th>Impact compta</th><th>Motif</th></tr>
+      ${rows.map(m => `<tr>
+        <td>${esc((m.date || '').replace('T', ' ').slice(0, 16))}</td>
+        <td>${esc(m.produit_nom || '—')}</td>
+        <td><span class="badge ${m.sens === 'IN' ? 'st-recu' : 'st-termine'}">${m.sens === 'IN' ? 'Entrée' : 'Sortie'}</span></td>
+        <td>${fmt(m.quantite)} ${esc(m.unite || '')}</td>
+        <td>${money(m.prix_unitaire)}</td>
+        <td>${money(m.montant)}</td>
+        <td class="${m.sens === 'IN' ? 'neg' : 'pos'}">${m.sens === 'IN' ? 'Dépense' : 'Revenu'}</td>
+        <td>${esc(m.motif || '—')}</td>
+      </tr>`).join('')}</table>` : '<div class="hint">Aucun mouvement de stock.</div>';
+  } catch (e) { box.innerHTML = '<div class="hint">—</div>'; }
+}
+window.mouvementProduit = async (id) => {
+  const p = _produits.find(x => x.id === id); if (!p) return;
+  $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+    <div class="modal"><div class="modal-head"><h3>Mouvement de stock — ${esc(p.nom)}</h3>
+      <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="hint">Stock actuel : <b>${fmt(p.stock_actuel)} ${esc(p.unite)}</b>. Une <b>entrée</b> est comptée
+          comme dépense (prix d'achat), une <b>sortie</b> comme revenu (prix de vente).</div>
+        <div class="formgrid" style="margin-top:10px">
+        <span><label>Sens</label><select id="mvSens">
+          <option value="IN">Entrée (achat → dépense)</option>
+          <option value="OUT">Sortie (vente → revenu)</option></select></span>
+        <span><label>Quantité</label><input id="mvQte" type="number" step="0.001" value="0"></span>
+        <span><label>Prix unitaire</label><input id="mvPrix" type="number" step="0.01" value="${p.prix_vente || p.prix_achat || 0}"></span>
+        <span style="flex:1"><label>Motif</label><input id="mvMotif" placeholder="Optionnel"></span>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn sec" onclick="document.querySelector('.modal-bg').remove()">← Retour</button>
+        <button class="btn" id="mvSave">Enregistrer</button></div></div></div></div>`;
+  $('mvSens').onchange = () => { $('mvPrix').value = $('mvSens').value === 'IN' ? (p.prix_achat || 0) : (p.prix_vente || p.prix_vente_gros || 0); };
+  $('mvSave').onclick = async () => {
+    try {
+      await api('/produits/' + id + '/mouvement', { method: 'POST', body: JSON.stringify({
+        sens: $('mvSens').value, quantite: Number($('mvQte').value || 0),
+        prix_unitaire: Number($('mvPrix').value || 0), motif: $('mvMotif').value }) });
+      toast('Mouvement enregistré (écriture comptable créée)');
+      document.querySelector('.modal-bg').remove(); loadProduits();
+    } catch (e) { toast(e.message, true); }
+  };
+};
 window.editProduit = (id) => {
   const p = _produits.find(x => x.id === id); if (!p) return;
   const frOpts = `<option value="">— Fournisseur —</option>` +
@@ -649,19 +752,22 @@ async function pageGros() {
   c.innerHTML = `<div class="panel"><h3>Ouvrir un compte gros (marchandise prépayée)</h3>
     <div class="filters">
       <span><label>Client</label><select id="gClient">
-        ${clients.map(c => `<option value="${c.id}">${esc(c.nom)}</option>`).join('')}</select></span>
+        ${clients.map(c => `<option value="${c.id}">${esc(c.nom)} — ${esc(c.immatriculation)}</option>`).join('')}</select></span>
       <span><label>Produit</label><select id="gProd">
         ${produits.map(p => `<option value="${p.id}">${esc(p.nom)}</option>`).join('')}</select></span>
       <span><label>Quantité totale</label><input id="gQte" type="number" step="0.001" value="0"></span>
       <span><label>Prix unitaire</label><input id="gPrix" type="number" step="0.01" value="0"></span>
-      <button class="btn sec" id="gAdd">Créer</button>
-    </div></div>
+      <button class="btn sec" id="gAdd">Créer & facturer</button>
+    </div>
+    <div class="hint">À la création, la marchandise est <b>facturée automatiquement</b> (prépayée) et
+      <b>sortie du stock</b>. Les enlèvements ne font que livrer la quantité déjà vendue.</div></div>
     <div class="panel"><h3>Comptes en gros & solde à enlever</h3><div id="gTable"><div class="hint">Chargement…</div></div></div>`;
   $('gAdd').onclick = async () => {
-    try { await api('/commandes-gros', { method: 'POST', body: JSON.stringify({
+    try { const r = await api('/commandes-gros', { method: 'POST', body: JSON.stringify({
       entite_type: 'CLIENT', entite_id: Number($('gClient').value), produit_id: Number($('gProd').value),
       quantite_totale: Number($('gQte').value || 0), prix_unitaire: Number($('gPrix').value || 0) }) });
-      toast('Compte gros créé'); loadGros(); } catch (e) { toast(e.message, true); }
+      toast(r.facture ? `Compte gros créé — facture ${r.facture.numero} générée et stock décrémenté` : 'Compte gros créé');
+      loadGros(); } catch (e) { toast(e.message, true); }
   };
   loadGros();
 }
@@ -669,12 +775,13 @@ async function loadGros() {
   try {
     const rows = await api('/commandes-gros');
     $('gTable').innerHTML = rows.length ? `<table>
-      <tr><th>Client</th><th>Produit</th><th>Total</th><th>Restant à enlever</th><th>Prix u.</th><th></th></tr>
+      <tr><th>Client</th><th>Produit</th><th>Total</th><th>Restant à enlever</th><th>Prix u.</th><th>Facture</th><th></th></tr>
       ${rows.map(g => `<tr>
         <td>${esc(g.entite_nom || '—')}</td><td>${esc(g.produit_nom || '—')}</td>
         <td>${fmt(g.quantite_totale)} ${esc(g.unite || '')}</td>
         <td class="${g.quantite_restante > 0 ? 'pos' : ''}">${fmt(g.quantite_restante)} ${esc(g.unite || '')}</td>
         <td>${money(g.prix_unitaire)}</td>
+        <td>${g.facture_numero ? `<span class="sig-ok">🧾 ${esc(g.facture_numero)}</span>` : '—'}</td>
         <td class="row-actions">${g.quantite_restante > 0
           ? `<button class="btn sec" onclick="enlever(${g.id},${g.quantite_restante})">Enlèvement</button>` : '✔ soldé'}</td>
       </tr>`).join('')}</table>` : '<div class="hint">Aucun compte en gros.</div>';
@@ -696,7 +803,7 @@ async function pageFacturation() {
   catch { _faClients = []; _faProduits = []; }
   _faLignes = [];
   const clOpts = `<option value="">— Sans client —</option>` +
-    _faClients.map(x => `<option value="${x.id}">${esc(x.nom)}</option>`).join('');
+    _faClients.map(x => `<option value="${x.id}">${esc(x.nom)} — ${esc(x.immatriculation)}</option>`).join('');
   c.innerHTML = `
     <div class="panel"><h3>Charger un bon (clé maîtresse)</h3>
       <div class="hint">Saisissez le numéro du bon : le client, le produit, la quantité pesée,

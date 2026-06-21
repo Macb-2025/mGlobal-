@@ -103,6 +103,32 @@ r.get('/', (req, res) => {
   res.json(rows.map(mapBon));
 });
 
+// Vérification automatique du client à la saisie d'un bon : recherche le client par
+// immatriculation (clé unique) ou par nom (plusieurs clients peuvent partager un nom)
+// et indique s'il dispose d'un compte gros avec solde à enlever → mode « enlèvement ».
+r.get('/verif-client', (req, res) => {
+  const did = scopeDistributeur(req);
+  const imm = String(req.query.immatriculation || '').trim().toUpperCase();
+  const nom = String(req.query.nom || '').trim();
+  if (!imm && !nom) return res.json({ clients: [], aGros: false });
+
+  let clients = [];
+  if (imm)
+    clients = db.prepare(`SELECT id, nom, immatriculation, telephone FROM clients
+      WHERE distributeur_id = ? AND UPPER(immatriculation) = ?`).all(did, imm);
+  if (!clients.length && nom)
+    clients = db.prepare(`SELECT id, nom, immatriculation, telephone FROM clients
+      WHERE distributeur_id = ? AND LOWER(nom) = LOWER(?) ORDER BY id LIMIT 10`).all(did, nom);
+
+  const gros = db.prepare(`SELECT cg.id, cg.quantite_restante, cg.prix_unitaire, p.nom AS produit_nom, p.unite
+    FROM commandes_gros cg LEFT JOIN produits p ON p.id = cg.produit_id
+    WHERE cg.distributeur_id = ? AND cg.entite_type = 'CLIENT' AND cg.entite_id = ? AND cg.quantite_restante > 0
+    ORDER BY cg.created_at DESC`);
+  const out = clients.map(c => ({ ...c, gros: gros.all(did, c.id) }));
+  const aGros = out.some(c => c.gros.length > 0);
+  res.json({ clients: out, aGros, mode: aGros ? 'enlevement' : 'nouveau_bon' });
+});
+
 // Bon de commande imprimable (HTML) — généré à l'envoi au pont bascule.
 r.get('/:id/imprimer', (req, res) => {
   const did = scopeDistributeur(req);
@@ -240,7 +266,8 @@ function bonCommandeHtml(b, d) {
   ${b.note ? `<div class="note"><b>Note :</b> ${escH(b.note)}</div>` : ''}
   <div class="sign"><div>Signature &amp; Cachet</div><div>Signature Chauffeur</div></div>
   ${b.signature ? `<div class="sig-num">🔏 Signature électronique : ${escH(b.signature)} — ${escH(b.signature_par || '')} ${escH(b.signature_le || '')}</div>` : ''}
-  <div class="foot">Document généré par la plateforme mGlobal — ${new Date().toLocaleString('fr-FR')}</div>
+  <div class="foot">Document généré par la plateforme mGlobal — ${new Date().toLocaleString('fr-FR')}
+    <br>© mGlobalTec — Aladji SALL · 771184001 · aladjisall@gmail.com / macb.global@gmail.com · Dakar, Sénégal</div>
   <div style="text-align:center;margin-top:18px"><button onclick="window.print()">🖨 Imprimer</button></div>
 </div>
 <script>window.addEventListener('load', () => setTimeout(() => window.print(), 350));</script>

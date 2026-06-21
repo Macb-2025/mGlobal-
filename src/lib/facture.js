@@ -211,6 +211,7 @@ export function factureHtml(fa, vendeur = {}) {
     ${vendeur.pied_facture ? esc(vendeur.pied_facture) + '<br>' : ''}
     ${raison}${vendeur.ninea ? ' · NINEA ' + esc(vendeur.ninea) : ''}${vendeur.rccm ? ' · RCCM ' + esc(vendeur.rccm) : ''}
     <br>Facture générée par mGlobal Cloud — document émis par voie électronique.
+    <br>© mGlobalTec — Aladji SALL · 771184001 · aladjisall@gmail.com / macb.global@gmail.com · Dakar, Sénégal
   </div>
 </div>
 <div class="toolbar"><button onclick="window.print()">🖨 Imprimer / Enregistrer en PDF</button></div>
