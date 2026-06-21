@@ -1,4 +1,4 @@
-# mGlobal Cloud — Plateforme de gestion distante (multi-distributeurs)
+# mGlobal Business — Plateforme de gestion distante (multi-distributeurs)
 
 Plateforme web **multi-tenant** pour mGlobal Pont Bascule, accessible **partout dans le monde**.
 Chaque distributeur dispose de son **espace privé isolé** (ses bons, ses clients, ses rapports,
