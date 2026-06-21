@@ -6,6 +6,7 @@ import db from '../lib/db.js';
 import { customAlphabet } from 'nanoid';
 import { requireAuth, denySuperadmin, requireEspaceActif, requireRole } from '../lib/auth.js';
 import { factureHtml } from '../lib/facture.js';
+import { signerBon } from '../lib/signature.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
@@ -457,6 +458,27 @@ r.post('/relicat/reglement', (req, res) => {
   res.json({ ok: true, client: db.prepare(`SELECT * FROM clients WHERE id = ?`).get(client.id) });
 });
 
+// Situation détaillée d'un client : solde harmonisé (dette − relicat) + détail des
+// factures (reste à payer) et historique des règlements encaissés.
+r.get('/relicat/:id/detail', (req, res) => {
+  const client = db.prepare(`SELECT id, nom, immatriculation, telephone, adresse, solde_dette, solde_relicat
+    FROM clients WHERE id = ? AND distributeur_id = ?`).get(req.params.id, did(req));
+  if (!client) return res.status(404).json({ error: 'Client introuvable' });
+  const factures = db.prepare(`SELECT id, numero, numero_bon, date, montant_total, montant_paye, relicat, statut
+    FROM factures WHERE distributeur_id = ? AND client_id = ? ORDER BY date DESC, id DESC`).all(did(req), client.id);
+  const reglements = db.prepare(`SELECT date, montant, description FROM comptabilite
+    WHERE distributeur_id = ? AND client_id = ? AND categorie = 'REGLEMENT_CLIENT'
+    ORDER BY date DESC, id DESC`).all(did(req), client.id);
+  const totalFacture = round2(factures.reduce((s, f) => s + num(f.montant_total), 0));
+  const totalRegle = round2(factures.reduce((s, f) => s + num(f.montant_paye), 0));
+  res.json({
+    client,
+    solde_net: round2(num(client.solde_dette) - num(client.solde_relicat)),
+    totalFacture, totalRegle,
+    factures, reglements
+  });
+});
+
 // ══════════════════════════════════════════
 // 5. COMPTABILITÉ (journal de caisse)
 // ══════════════════════════════════════════
@@ -575,7 +597,11 @@ r.post('/commandes-gros', (req, res) => {
 
 r.get('/enlevements', (req, res) => {
   res.json(db.prepare(`
-    SELECT e.*, p.nom AS produit_nom FROM enlevements e
+    SELECT e.*, p.nom AS produit_nom, p.unite,
+      CASE cg.entite_type WHEN 'CLIENT' THEN (SELECT nom FROM clients WHERE id = cg.entite_id)
+                          ELSE (SELECT nom FROM distributeurs WHERE id = cg.entite_id) END AS entite_nom,
+      (SELECT immatriculation FROM clients WHERE id = cg.entite_id) AS immatriculation
+    FROM enlevements e
     LEFT JOIN commandes_gros cg ON cg.id = e.commande_gros_id
     LEFT JOIN produits p ON p.id = cg.produit_id
     WHERE e.distributeur_id = ? ORDER BY e.date DESC LIMIT 500`).all(did(req)));
@@ -584,6 +610,7 @@ r.get('/enlevements', (req, res) => {
 // Enlèvement fractionné : livraison d'une marchandise DÉJÀ vendue et facturée à
 // l'ouverture du compte gros. Le stock a déjà été déduit à la vente : on ne déduit
 // donc que le solde de marchandise restant à enlever (pas de double déduction).
+// Chaque enlèvement reçoit un BON D'ENLÈVEMENT numéroté, signé et imprimable.
 r.post('/enlevements', (req, res) => {
   const cg = db.prepare(`SELECT * FROM commandes_gros WHERE id = ? AND distributeur_id = ?`)
     .get(req.body?.commande_gros_id, did(req));
@@ -593,13 +620,46 @@ r.post('/enlevements', (req, res) => {
   if (qte > cg.quantite_restante)
     return res.status(400).json({ error: 'Quantité demandée indisponible pour cet enlèvement' });
 
-  const tx = db.transaction(() => {
-    db.prepare(`UPDATE commandes_gros SET quantite_restante = quantite_restante - ? WHERE id = ?`).run(qte, cg.id);
-    db.prepare(`INSERT INTO enlevements (distributeur_id, commande_gros_id, quantite_enlevee, operateur)
-      VALUES (?,?,?,?)`).run(did(req), cg.id, qte, req.user.username);
-  });
-  tx();
-  res.json({ ok: true, restant: round2(cg.quantite_restante - qte) });
+  const prod = cg.produit_id
+    ? db.prepare(`SELECT * FROM produits WHERE id = ? AND distributeur_id = ?`).get(cg.produit_id, did(req))
+    : null;
+  const client = cg.entite_type === 'CLIENT'
+    ? db.prepare(`SELECT * FROM clients WHERE id = ? AND distributeur_id = ?`).get(cg.entite_id, did(req))
+    : null;
+  const chauffeur = (req.body?.chauffeur || '').toString();
+  const immatriculation = (req.body?.immatriculation || client?.immatriculation || '').toString();
+  const destination = (req.body?.destination || '').toString();
+
+  try {
+    const tx = db.transaction(() => {
+      db.prepare(`UPDATE commandes_gros SET quantite_restante = quantite_restante - ? WHERE id = ?`).run(qte, cg.id);
+
+      // Bon d'enlèvement numéroté (séquence par distributeur) + signature électronique.
+      const last = db.prepare(`SELECT COALESCE(MAX(numero),0) m FROM bons_commande WHERE distributeur_id = ?`).get(did(req)).m;
+      const numero = last + 1;
+      const reference = `ENL-${did(req)}-${String(numero).padStart(4, '0')}`;
+      const info = db.prepare(`INSERT INTO bons_commande
+        (distributeur_id, reference, numero, client, produit, immatriculation, chauffeur, destination,
+         quantite_prevue, note, statut, cree_par)
+        VALUES (?,?,?,?,?,?,?,?,?,?,'termine',?)`).run(
+          did(req), reference, numero, client?.nom || '', prod?.nom || '', immatriculation, chauffeur, destination,
+          qte, `Enlèvement gros #${cg.id} — ${qte} ${prod?.unite || 't'}`, req.user.username);
+      const bonId = info.lastInsertRowid;
+      const bonRow = db.prepare(`SELECT * FROM bons_commande WHERE id = ?`).get(bonId);
+      const sig = signerBon(bonRow, req.user.username);
+      db.prepare(`UPDATE bons_commande SET signature=?, signature_par=?, signature_le=? WHERE id=?`)
+        .run(sig.signature, sig.signataire, sig.le, bonId);
+      db.prepare(`INSERT INTO bons_commande_evts (bon_id, statut, detail, par) VALUES (?,?,?,?)`)
+        .run(bonId, 'termine', `Bon d'enlèvement émis (${qte} ${prod?.unite || 't'})`, req.user.username);
+
+      db.prepare(`INSERT INTO enlevements (distributeur_id, commande_gros_id, quantite_enlevee, operateur, bon_id, bon_numero)
+        VALUES (?,?,?,?,?,?)`).run(did(req), cg.id, qte, req.user.username, bonId, reference);
+
+      return { bon: { id: bonId, numero, reference } };
+    });
+    const r2 = tx();
+    res.json({ ok: true, restant: round2(cg.quantite_restante - qte), bon: r2.bon });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ══════════════════════════════════════════
@@ -642,6 +702,46 @@ r.delete('/parametres/logo', requireRole('admin'), (req, res) => {
   if (d?.logo) { try { fs.unlinkSync(path.join(__dirname, '..', '..', 'public', d.logo)); } catch {} }
   db.prepare(`UPDATE distributeurs SET logo = NULL WHERE id = ?`).run(did(req));
   res.json({ ok: true });
+});
+
+// ══════════════════════════════════════════
+// 8. RECHERCHE GLOBALE (factures, bons, enlèvements, stock) + réimpression
+// ══════════════════════════════════════════
+r.get('/recherche', (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.json({ factures: [], bons: [], enlevements: [], produits: [] });
+  const like = `%${q}%`;
+
+  const factures = db.prepare(`SELECT fa.id, fa.numero, fa.numero_bon, fa.date, fa.montant_total,
+      fa.montant_paye, fa.relicat, fa.statut, COALESCE(c.nom, fa.client_nom) AS client_nom
+    FROM factures fa LEFT JOIN clients c ON c.id = fa.client_id
+    WHERE fa.distributeur_id = ?
+      AND (fa.numero LIKE ? OR fa.numero_bon LIKE ? OR c.nom LIKE ? OR fa.client_nom LIKE ?)
+    ORDER BY fa.date DESC LIMIT 50`).all(did(req), like, like, like, like);
+
+  const bons = db.prepare(`SELECT id, reference, numero, client, produit, immatriculation, quantite_prevue,
+      statut, created_at FROM bons_commande
+    WHERE distributeur_id = ?
+      AND (reference LIKE ? OR CAST(numero AS TEXT) LIKE ? OR client LIKE ? OR immatriculation LIKE ? OR produit LIKE ?)
+    ORDER BY created_at DESC LIMIT 50`).all(did(req), like, like, like, like, like);
+
+  const enlevements = db.prepare(`SELECT e.id, e.bon_id, e.bon_numero, e.quantite_enlevee, e.date,
+      p.nom AS produit_nom, p.unite,
+      CASE cg.entite_type WHEN 'CLIENT' THEN (SELECT nom FROM clients WHERE id = cg.entite_id)
+                          ELSE (SELECT nom FROM distributeurs WHERE id = cg.entite_id) END AS entite_nom
+    FROM enlevements e
+    LEFT JOIN commandes_gros cg ON cg.id = e.commande_gros_id
+    LEFT JOIN produits p ON p.id = cg.produit_id
+    WHERE e.distributeur_id = ?
+      AND (e.bon_numero LIKE ? OR p.nom LIKE ?
+        OR (SELECT nom FROM clients WHERE id = cg.entite_id) LIKE ?)
+    ORDER BY e.date DESC LIMIT 50`).all(did(req), like, like, like);
+
+  const produits = db.prepare(`SELECT id, nom, reference, unite, stock_actuel, prix_vente, prix_vente_gros, tva
+    FROM produits WHERE distributeur_id = ? AND (nom LIKE ? OR reference LIKE ?)
+    ORDER BY nom LIMIT 50`).all(did(req), like, like);
+
+  res.json({ factures, bons, enlevements, produits });
 });
 
 // Seul l'administrateur de l'espace configure l'identité de facturation.

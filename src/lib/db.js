@@ -334,6 +334,10 @@ addColumn('distributeurs', 'logo', 'logo TEXT'); // chemin du logo (impression f
 addColumn('commandes_gros', 'facture_id', 'facture_id INTEGER');
 addColumn('commandes_gros', 'facture_numero', 'facture_numero TEXT');
 
+// Enlèvement gros : bon d'enlèvement imprimable attribué à chaque retrait.
+addColumn('enlevements', 'bon_id', 'bon_id INTEGER');
+addColumn('enlevements', 'bon_numero', 'bon_numero TEXT');
+
 // Catalogue : prix de vente HT + taux de TVA + référence article.
 addColumn('produits', 'reference',  'reference TEXT');
 addColumn('produits', 'prix_vente', 'prix_vente REAL NOT NULL DEFAULT 0');

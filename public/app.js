@@ -6,6 +6,7 @@ const el = (h) => { const d = document.createElement('div'); d.innerHTML = h.tri
 const esc = (x) => String(x ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 const fmt = (n, d = 3) => Number(n || 0).toFixed(d);
 const money = (n) => Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+const round2 = (n) => Math.round(Number(n || 0) * 100) / 100;
 const today = () => new Date().toISOString().slice(0, 10);
 const firstOfMonth = () => new Date().toISOString().slice(0, 8) + '01';
 
@@ -80,22 +81,23 @@ function menuFor(role) {
     gros:         { id: 'gros', label: '🧱 Ventes en gros' },
     facturation:  { id: 'facturation', label: '🧾 Facturation' },
     relicat:      { id: 'relicat', label: '💳 Relicat / Créances' },
+    recherche:    { id: 'recherche', label: '🔎 Recherche' },
     compta:       { id: 'compta', label: '💰 Comptabilité' },
     rapports:     { id: 'rapports', label: '📈 Rapports' }
   };
   // Comptable : tout le cycle commercial & comptable (pas d'admin utilisateurs).
   if (role === 'comptable') {
     return [M.dashboard, M.suivi, M.clients, M.fournisseurs, M.stock, M.gros,
-      M.facturation, M.relicat, M.compta, M.rapports];
+      M.facturation, M.relicat, M.recherche, M.compta, M.rapports];
   }
   // Assistante : saisie opérationnelle (bons, clients, fournisseurs, stock, facturation).
   if (role === 'assistante') {
     return [M.dashboard, M.suivi, M.bons, M.clients, M.fournisseurs, M.stock, M.gros,
-      M.facturation, M.relicat];
+      M.facturation, M.relicat, M.recherche];
   }
   // Admin (et opérateur hérité) : accès complet.
   const base = [M.dashboard, M.suivi, M.bons, M.clients, M.fournisseurs, M.stock, M.gros,
-    M.facturation, M.relicat, M.compta, M.rapports];
+    M.facturation, M.relicat, M.recherche, M.compta, M.rapports];
   if (role === 'admin') base.push(
     { id: 'parametres', label: '🏢 Paramètres facturation' },
     { id: 'users', label: '🔑 Utilisateurs & rôles' });
@@ -129,8 +131,8 @@ function go(page, fromBack = false) {
   updateBackBtn();
   ({ dashboard: pageDashboard, suivi: pageSuivi, bons: pageBons, clients: pageClients,
      fournisseurs: pageFournisseurs, stock: pageStock, gros: pageGros,
-     facturation: pageFacturation, relicat: pageRelicat, compta: pageCompta,
-     rapports: pageRapports, users: pageUsers, admin: pageAdmin,
+     facturation: pageFacturation, relicat: pageRelicat, recherche: pageRecherche,
+     compta: pageCompta, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
      parametres: pageParametres }[page] || pageDashboard)();
 }
 function goBack() {
@@ -204,12 +206,12 @@ async function loadBons() {
         <td>${esc(s.produit)}</td><td>${fmt(s.poidsNet)}</td><td>${esc((s.dateSortie || '').slice(11, 16))}</td>
         <td class="row-actions">
           <button class="btn sec" onclick="voirBon(${s.id})">Voir</button>
-          <button class="btn sec" onclick="imprimerBon(${s.id})">Imprimer</button>
+          <button class="btn sec" onclick="imprimerSortie(${s.id})">Imprimer</button>
         </td></tr>`).join('')}</table>` : '<div class="hint">Aucun bon sur cette période.</div>';
   } catch (e) { toast(e.message, true); }
 }
 window.voirBon = (id) => window.open(`/api/bon?id=${id}&token=${encodeURIComponent(S.token)}`, '_blank');
-window.imprimerBon = async (id) => {
+window.imprimerSortie = async (id) => {
   try { const r = await api('/bons', { method: 'POST', body: JSON.stringify({ sortieId: id, action: 'print' }) });
     toast(r.message || 'Bon envoyé à l\'imprimante.'); }
   catch (e) { toast(e.message, true); }
@@ -290,7 +292,7 @@ async function verifClientBon() {
       box.innerHTML = `✅ <b>${esc(c.nom)}</b> (${esc(c.immatriculation)}) a un <b>compte gros</b> — `
         + c.gros.map(g => `${esc(g.produit_nom || 'marchandise')} : <b>${fmt(g.quantite_restante)} ${esc(g.unite || '')}</b> à enlever`).join(' · ')
         + ` → <b>mode enlèvement</b>. `
-        + c.gros.map(g => `<button class="btn sec" onclick="enleverDepuisBon(${g.id},${g.quantite_restante})">Enlèvement (${esc(g.produit_nom || '')})</button>`).join(' ');
+        + c.gros.map(g => `<button class="btn sec" onclick="formEnlevement(${g.id})">📦 Enlèvement (${esc(g.produit_nom || '')})</button>`).join(' ');
       box.style.display = 'block';
     } else if (d.clients && d.clients.length) {
       box.className = 'verif-bon';
@@ -304,15 +306,53 @@ async function verifClientBon() {
     }
   } catch { box.style.display = 'none'; }
 }
-window.enleverDepuisBon = async (id, restant) => {
-  const q = prompt(`Quantité à enlever (max ${restant}) :`, String(restant));
-  if (q === null) return;
-  try {
-    await api('/enlevements', { method: 'POST', body: JSON.stringify({ commande_gros_id: id, quantite_enlevee: Number(q) }) });
-    toast('Enlèvement enregistré sur le compte gros (déjà facturé)');
-    verifClientBon();
-  } catch (e) { toast(e.message, true); }
+// Formulaire d'enlèvement : pré-rempli avec les infos du client et du produit du
+// compte gros (quantité restante). À la validation, un n° de bon est attribué et
+// le bon d'enlèvement s'imprime automatiquement.
+window.formEnlevement = (grosId) => {
+  if (!_verifGros) return;
+  const c = _verifGros.client;
+  const g = (_verifGros.gros || []).find(x => x.id === grosId);
+  if (!g) return;
+  enlevementModal(g, c, () => { verifClientBon(); loadSuivi(); });
 };
+
+// Modal d'enlèvement partagé (suivi des bons & page ventes en gros). Pré-rempli avec
+// les infos client/produit ; à la validation un n° de bon est attribué puis imprimé.
+function enlevementModal(g, c, onDone) {
+  const ident = c ? `Client : <b>${esc(c.nom)}</b>${c.immatriculation ? ' (' + esc(c.immatriculation) + ')' : ''}${c.telephone ? ' · ' + esc(c.telephone) : ''}<br>` : '';
+  $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+    <div class="modal"><div class="modal-head"><h3>Bon d'enlèvement</h3>
+      <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="verif-bon ok" style="display:block;margin-bottom:12px">
+          ${ident}Produit : <b>${esc(g.produit_nom || 'marchandise')}</b> · Reste à enlever :
+          <b>${fmt(g.quantite_restante)} ${esc(g.unite || 't')}</b></div>
+        <div class="formgrid">
+          <span><label>Quantité à enlever (${esc(g.unite || 't')})</label>
+            <input id="enlQte" type="number" step="0.001" max="${g.quantite_restante}" value="${g.quantite_restante}"></span>
+          <span><label>Immatriculation camion</label><input id="enlImmat" placeholder="DK-0000-AA"></span>
+          <span><label>Chauffeur</label><input id="enlChauf" placeholder="Nom du chauffeur"></span>
+          <span><label>Destination</label><input id="enlDest" placeholder="Ville / chantier"></span>
+        </div>
+        <div style="margin-top:14px;display:flex;gap:8px">
+          <button class="btn sec" onclick="document.querySelector('.modal-bg').remove()">← Retour</button>
+          <button class="btn" id="enlGo">📦 Valider, attribuer le n° de bon & imprimer</button></div>
+      </div></div></div>`;
+  $('enlGo').onclick = async () => {
+    const q = Number($('enlQte').value || 0);
+    if (q <= 0) return toast('Quantité invalide', true);
+    try {
+      const r = await api('/enlevements', { method: 'POST', body: JSON.stringify({
+        commande_gros_id: g.id, quantite_enlevee: q,
+        immatriculation: $('enlImmat').value, chauffeur: $('enlChauf').value, destination: $('enlDest').value }) });
+      document.querySelector('.modal-bg')?.remove();
+      toast(`Enlèvement enregistré — bon ${r.bon?.reference || ''} attribué`);
+      if (r.bon?.id) imprimerBon(r.bon.id);
+      if (onDone) onDone();
+    } catch (e) { toast(e.message, true); }
+  };
+}
 
 async function creerBon() {
   const body = {
@@ -749,31 +789,74 @@ async function pageGros() {
   const c = $('content');
   let clients = [], produits = [];
   try { [clients, produits] = await Promise.all([api('/clients'), api('/produits')]); } catch {}
-  c.innerHTML = `<div class="panel"><h3>Ouvrir un compte gros (marchandise prépayée)</h3>
-    <div class="filters">
+  _grosProduits = produits;
+  c.innerHTML = `<div class="panel"><h3>Vente en gros — créer & facturer</h3>
+    <div class="formgrid">
       <span><label>Client</label><select id="gClient">
         ${clients.map(c => `<option value="${c.id}">${esc(c.nom)} — ${esc(c.immatriculation)}</option>`).join('')}</select></span>
       <span><label>Produit</label><select id="gProd">
-        ${produits.map(p => `<option value="${p.id}">${esc(p.nom)}</option>`).join('')}</select></span>
+        ${produits.map(p => `<option value="${p.id}" data-px="${p.prix_vente_gros || p.prix_vente || 0}" data-tva="${p.tva ?? 18}">${esc(p.nom)}</option>`).join('')}</select></span>
       <span><label>Quantité totale</label><input id="gQte" type="number" step="0.001" value="0"></span>
       <span><label>Prix unitaire</label><input id="gPrix" type="number" step="0.01" value="0"></span>
-      <button class="btn sec" id="gAdd">Créer & facturer</button>
+      <span><label>Règlement</label><select id="gReg">
+        <option value="comptant">Payé comptant (prépayé)</option>
+        <option value="partiel">Versement partiel (reste = crédit)</option>
+        <option value="credit">Crédit total (à payer)</option></select></span>
+      <span><label>Somme versée</label><input id="gPaye" type="number" step="0.01" value="0"></span>
+      <span><label>Mode de règlement</label><input id="gMode" placeholder="Espèces, virement…"></span>
     </div>
-    <div class="hint">À la création, la marchandise est <b>facturée automatiquement</b> (prépayée) et
-      <b>sortie du stock</b>. Les enlèvements ne font que livrer la quantité déjà vendue.</div></div>
+    <div class="fa-totaux" id="gTotaux"></div>
+    <div style="margin-top:10px"><button class="btn" id="gAdd">🧾 Créer, facturer & imprimer</button></div>
+    <div class="hint">La marchandise est <b>facturée automatiquement</b> et <b>sortie du stock</b>.
+      Selon la somme versée : un reste alimente la <b>dette (crédit)</b> du client, un trop-perçu son <b>relicat</b>.</div></div>
     <div class="panel"><h3>Comptes en gros & solde à enlever</h3><div id="gTable"><div class="hint">Chargement…</div></div></div>`;
+
+  const recalcGros = () => {
+    const opt = $('gProd').selectedOptions[0];
+    const tva = opt ? Number(opt.dataset.tva || 18) : 18;
+    const qte = Number($('gQte').value || 0), pu = Number($('gPrix').value || 0);
+    const ht = qte * pu, ttc = ht * (1 + tva / 100);
+    const reg = $('gReg').value;
+    if (reg === 'comptant') $('gPaye').value = round2(ttc);
+    else if (reg === 'credit') $('gPaye').value = 0;
+    const paye = Number($('gPaye').value || 0);
+    const reste = round2(ttc - paye);
+    $('gTotaux').innerHTML = `
+      <div class="row"><span>Montant HT</span><b>${money(ht)}</b></div>
+      <div class="row"><span>TVA (${fmt(tva, 1)}%)</span><b>${money(ttc - ht)}</b></div>
+      <div class="row ttc"><span>TOTAL TTC</span><b>${money(ttc)}</b></div>
+      <div class="row ${reste > 0 ? 'neg' : 'pos'}"><span>${reste >= 0 ? 'Reste (crédit client)' : 'Trop-perçu (relicat)'}</span><b>${money(Math.abs(reste))}</b></div>`;
+  };
+  $('gProd').onchange = () => {
+    const opt = $('gProd').selectedOptions[0];
+    if (opt && opt.dataset.px && Number($('gPrix').value || 0) === 0) $('gPrix').value = opt.dataset.px;
+    recalcGros();
+  };
+  ['gQte', 'gPrix', 'gPaye'].forEach(id => $(id).addEventListener('input', recalcGros));
+  $('gReg').onchange = recalcGros;
+  recalcGros();
+
   $('gAdd').onclick = async () => {
-    try { const r = await api('/commandes-gros', { method: 'POST', body: JSON.stringify({
+    const reg = $('gReg').value;
+    const body = {
       entite_type: 'CLIENT', entite_id: Number($('gClient').value), produit_id: Number($('gProd').value),
-      quantite_totale: Number($('gQte').value || 0), prix_unitaire: Number($('gPrix').value || 0) }) });
-      toast(r.facture ? `Compte gros créé — facture ${r.facture.numero} générée et stock décrémenté` : 'Compte gros créé');
+      quantite_totale: Number($('gQte').value || 0), prix_unitaire: Number($('gPrix').value || 0),
+      mode_paiement: $('gMode').value || (reg === 'comptant' ? 'Prépayé (gros)' : reg === 'credit' ? 'Crédit' : 'Versement partiel')
+    };
+    if (reg !== 'comptant') body.montant_paye = Number($('gPaye').value || 0);
+    try { const r = await api('/commandes-gros', { method: 'POST', body: JSON.stringify(body) });
+      toast(r.facture ? `Compte gros créé — facture ${r.facture.numero} générée, stock décrémenté` : 'Compte gros créé');
+      if (r.facture?.id) imprimerFacture(r.facture.id);
       loadGros(); } catch (e) { toast(e.message, true); }
   };
   loadGros();
 }
+let _grosProduits = [];
+let _grosRows = [];
 async function loadGros() {
   try {
     const rows = await api('/commandes-gros');
+    _grosRows = rows;
     $('gTable').innerHTML = rows.length ? `<table>
       <tr><th>Client</th><th>Produit</th><th>Total</th><th>Restant à enlever</th><th>Prix u.</th><th>Facture</th><th></th></tr>
       ${rows.map(g => `<tr>
@@ -782,16 +865,18 @@ async function loadGros() {
         <td class="${g.quantite_restante > 0 ? 'pos' : ''}">${fmt(g.quantite_restante)} ${esc(g.unite || '')}</td>
         <td>${money(g.prix_unitaire)}</td>
         <td>${g.facture_numero ? `<span class="sig-ok">🧾 ${esc(g.facture_numero)}</span>` : '—'}</td>
-        <td class="row-actions">${g.quantite_restante > 0
-          ? `<button class="btn sec" onclick="enlever(${g.id},${g.quantite_restante})">Enlèvement</button>` : '✔ soldé'}</td>
+        <td class="row-actions">
+          ${g.facture_id ? `<button class="btn sec" onclick="imprimerFacture(${g.facture_id})">🧾 Facture</button>` : ''}
+          ${g.quantite_restante > 0
+          ? `<button class="btn sec" onclick="enlever(${g.id})">📦 Enlèvement</button>` : '✔ soldé'}</td>
       </tr>`).join('')}</table>` : '<div class="hint">Aucun compte en gros.</div>';
   } catch (e) { toast(e.message, true); }
 }
-window.enlever = async (id, restant) => {
-  const q = prompt(`Quantité à enlever (max ${restant}) :`, ''); if (q === null) return;
-  try { await api('/enlevements', { method: 'POST', body: JSON.stringify({
-    commande_gros_id: id, quantite_enlevee: Number(q) }) });
-    toast('Enlèvement enregistré (stock déduit)'); loadGros(); } catch (e) { toast(e.message, true); }
+window.enlever = (id) => {
+  const g = _grosRows.find(x => x.id === id); if (!g) return;
+  enlevementModal(
+    { id: g.id, produit_nom: g.produit_nom, unite: g.unite, quantite_restante: g.quantite_restante },
+    { nom: g.entite_nom }, loadGros);
 };
 
 /* ───────────── Facturation (n° de bon = clé maîtresse, lignes + TVA) ───────────── */
@@ -974,30 +1059,142 @@ window.imprimerBon = (id) => window.open(`/api/bons-commande/${id}/imprimer?toke
 async function pageRelicat() {
   $('pageTitle').textContent = 'Relicat / Créances clients';
   const c = $('content');
-  c.innerHTML = `<div class="panel"><h3>Clients avec dette ou relicat</h3>
-    <div class="hint">Enregistrez un règlement : il solde la dette puis verse l'excédent en relicat (acompte).</div>
+  c.innerHTML = `<div class="panel"><h3>Situation harmonisée des clients</h3>
+    <div class="hint">Solde net = dette − relicat. Cliquez « Détail » pour le relevé des factures
+      (reste à payer) et l'historique des règlements. Un règlement solde la dette puis verse
+      l'excédent en relicat (acompte).</div>
+    <div class="filters" style="margin-top:8px"><input id="reSearch" placeholder="🔎 Rechercher un client (nom / code)…" style="flex:1"></div>
     <div id="reTable"><div class="hint">Chargement…</div></div></div>`;
+  $('reSearch').addEventListener('input', renderRelicat);
   loadRelicat();
 }
+let _relicatRows = [];
 async function loadRelicat() {
-  try {
-    const rows = await api('/relicat');
-    $('reTable').innerHTML = rows.length ? `<table>
-      <tr><th>Client</th><th>Code</th><th>Téléphone</th><th>Dette</th><th>Relicat</th><th></th></tr>
-      ${rows.map(x => `<tr>
+  try { _relicatRows = await api('/relicat'); renderRelicat(); }
+  catch (e) { toast(e.message, true); }
+}
+function renderRelicat() {
+  const q = ($('reSearch')?.value || '').trim().toLowerCase();
+  const rows = _relicatRows.filter(x => !q
+    || (x.nom || '').toLowerCase().includes(q) || (x.immatriculation || '').toLowerCase().includes(q));
+  $('reTable').innerHTML = rows.length ? `<table>
+    <tr><th>Client</th><th>Code</th><th>Téléphone</th><th>Dette</th><th>Relicat</th><th>Solde net</th><th></th></tr>
+    ${rows.map(x => {
+      const net = round2((x.solde_dette || 0) - (x.solde_relicat || 0));
+      return `<tr>
         <td>${esc(x.nom)}</td><td><span class="keybox">${esc(x.immatriculation)}</span></td>
         <td>${esc(x.telephone || '')}</td>
         <td class="${x.solde_dette > 0 ? 'neg' : ''}">${money(x.solde_dette)}</td>
         <td class="${x.solde_relicat > 0 ? 'pos' : ''}">${money(x.solde_relicat)}</td>
-        <td class="row-actions"><button class="btn sec" onclick="reglerClient(${x.id})">Encaisser règlement</button></td>
-      </tr>`).join('')}</table>` : '<div class="hint">Aucune dette ni relicat en cours.</div>';
-  } catch (e) { toast(e.message, true); }
+        <td class="${net > 0 ? 'neg' : net < 0 ? 'pos' : ''}"><b>${money(Math.abs(net))}</b> ${net > 0 ? 'dû' : net < 0 ? 'avance' : ''}</td>
+        <td class="row-actions">
+          <button class="btn sec" onclick="detailRelicat(${x.id})">Détail</button>
+          <button class="btn sec" onclick="reglerClient(${x.id})">Encaisser</button></td>
+      </tr>`; }).join('')}</table>` : '<div class="hint">Aucune dette ni relicat en cours.</div>';
 }
+window.detailRelicat = async (id) => {
+  try {
+    const d = await api(`/relicat/${id}/detail`);
+    const FA = { emise: 'Émise', partielle: 'Partielle', payee: 'Payée', annulee: 'Annulée' };
+    const facs = d.factures.length ? `<table>
+      <tr><th>N°</th><th>Date</th><th>Bon</th><th>TTC</th><th>Réglé</th><th>Reste</th><th>Statut</th><th></th></tr>
+      ${d.factures.map(f => `<tr>
+        <td>${esc(f.numero)}</td><td>${esc((f.date || '').slice(0, 10))}</td><td>${esc(f.numero_bon || '—')}</td>
+        <td>${money(f.montant_total)}</td><td>${money(f.montant_paye)}</td>
+        <td class="${f.relicat > 0 ? 'neg' : 'pos'}">${money(f.relicat)}</td>
+        <td>${FA[f.statut] || f.statut}</td>
+        <td><button class="btn sec" onclick="imprimerFacture(${f.id})">🖨</button></td>
+      </tr>`).join('')}</table>` : '<div class="hint">Aucune facture.</div>';
+    const regs = d.reglements.length ? `<table>
+      <tr><th>Date</th><th>Montant</th><th>Détail</th></tr>
+      ${d.reglements.map(r => `<tr><td>${esc((r.date || '').slice(0, 16))}</td>
+        <td class="pos">${money(r.montant)}</td><td>${esc(r.description || '')}</td></tr>`).join('')}</table>`
+      : '<div class="hint">Aucun règlement enregistré.</div>';
+    $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+      <div class="modal" style="max-width:760px"><div class="modal-head">
+        <h3>Situation — ${esc(d.client.nom)} (${esc(d.client.immatriculation)})</h3>
+        <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="kpis">
+          <div class="kpi"><div class="v">${money(d.totalFacture)}</div><div class="l">Total facturé</div></div>
+          <div class="kpi"><div class="v">${money(d.totalRegle)}</div><div class="l">Total réglé</div></div>
+          <div class="kpi"><div class="v">${money(d.client.solde_dette)}</div><div class="l">Dette</div></div>
+          <div class="kpi"><div class="v">${money(d.client.solde_relicat)}</div><div class="l">Relicat (avance)</div></div>
+          <div class="kpi"><div class="v">${money(Math.abs(d.solde_net))} ${d.solde_net > 0 ? 'dû' : d.solde_net < 0 ? 'avance' : ''}</div><div class="l">Solde net</div></div>
+        </div>
+        <h4 style="margin:16px 0 6px">Relevé de facturation</h4>${facs}
+        <h4 style="margin:16px 0 6px">Règlements encaissés</h4>${regs}
+        <div style="margin-top:14px;display:flex;gap:8px">
+          <button class="btn sec" onclick="document.querySelector('.modal-bg').remove()">← Fermer</button>
+          <button class="btn" onclick="document.querySelector('.modal-bg').remove();reglerClient(${id})">Encaisser un règlement</button></div>
+      </div></div></div>`;
+  } catch (e) { toast(e.message, true); }
+};
 window.reglerClient = async (id) => {
   const m = prompt('Montant encaissé :', ''); if (m === null) return;
   try { await api('/relicat/reglement', { method: 'POST', body: JSON.stringify({ client_id: id, montant: Number(m) }) });
     toast('Règlement enregistré'); loadRelicat(); } catch (e) { toast(e.message, true); }
 };
+
+/* ───────────── Recherche globale (factures / bons / enlèvements / stock) ───────────── */
+async function pageRecherche() {
+  $('pageTitle').textContent = 'Recherche & réimpression';
+  const c = $('content');
+  c.innerHTML = `<div class="panel"><h3>Rechercher</h3>
+    <div class="hint">Retrouvez une facture, un bon, un enlèvement ou un produit (stock en cours)
+      par numéro, client, immatriculation ou produit — puis réimprimez.</div>
+    <div class="filters" style="margin-top:10px">
+      <input id="rqInput" placeholder="N° facture / bon, client, immatriculation, produit…" style="flex:1">
+      <button class="btn" id="rqGo">🔎 Rechercher</button></div>
+    <div id="rqResults"><div class="hint">Saisissez un terme puis lancez la recherche.</div></div></div>`;
+  $('rqGo').onclick = lancerRecherche;
+  $('rqInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') lancerRecherche(); });
+  $('rqInput').focus();
+}
+async function lancerRecherche() {
+  const q = $('rqInput').value.trim();
+  if (!q) return toast('Saisissez un terme de recherche', true);
+  try {
+    const d = await api('/recherche?q=' + encodeURIComponent(q));
+    const FA = { emise: 'Émise', partielle: 'Partielle', payee: 'Payée', annulee: 'Annulée' };
+    const sFac = d.factures.length ? `<table>
+      <tr><th>N°</th><th>Date</th><th>Bon</th><th>Client</th><th>TTC</th><th>Reste</th><th>Statut</th><th></th></tr>
+      ${d.factures.map(f => `<tr>
+        <td>${esc(f.numero)}</td><td>${esc((f.date || '').slice(0, 10))}</td><td>${esc(f.numero_bon || '—')}</td>
+        <td>${esc(f.client_nom || '—')}</td><td>${money(f.montant_total)}</td>
+        <td class="${f.relicat > 0 ? 'neg' : 'pos'}">${money(f.relicat)}</td><td>${FA[f.statut] || f.statut}</td>
+        <td><button class="btn sec" onclick="imprimerFacture(${f.id})">🖨 Réimprimer</button></td>
+      </tr>`).join('')}</table>` : '<div class="hint">Aucune facture.</div>';
+    const sBon = d.bons.length ? `<table>
+      <tr><th>N°</th><th>Référence</th><th>Client</th><th>Produit</th><th>Immat.</th><th>Qté</th><th>Statut</th><th></th></tr>
+      ${d.bons.map(b => `<tr>
+        <td>${b.numero != null ? '#' + b.numero : '—'}</td><td>${esc(b.reference)}</td>
+        <td>${esc(b.client || '—')}</td><td>${esc(b.produit || '—')}</td><td>${esc(b.immatriculation || '—')}</td>
+        <td>${fmt(b.quantite_prevue)}</td><td>${esc(b.statut)}</td>
+        <td><button class="btn sec" onclick="imprimerBon(${b.id})">🖨 Réimprimer</button></td>
+      </tr>`).join('')}</table>` : '<div class="hint">Aucun bon.</div>';
+    const sEnl = d.enlevements.length ? `<table>
+      <tr><th>Bon</th><th>Date</th><th>Client</th><th>Produit</th><th>Quantité</th><th></th></tr>
+      ${d.enlevements.map(e => `<tr>
+        <td>${esc(e.bon_numero || '—')}</td><td>${esc((e.date || '').slice(0, 16))}</td>
+        <td>${esc(e.entite_nom || '—')}</td><td>${esc(e.produit_nom || '—')}</td>
+        <td>${fmt(e.quantite_enlevee)} ${esc(e.unite || '')}</td>
+        <td>${e.bon_id ? `<button class="btn sec" onclick="imprimerBon(${e.bon_id})">🖨 Réimprimer</button>` : '—'}</td>
+      </tr>`).join('')}</table>` : '<div class="hint">Aucun enlèvement.</div>';
+    const sProd = d.produits.length ? `<table>
+      <tr><th>Produit</th><th>Réf.</th><th>Stock actuel</th><th>Prix vente</th><th>Prix gros</th><th>TVA</th></tr>
+      ${d.produits.map(p => `<tr>
+        <td>${esc(p.nom)}</td><td>${esc(p.reference || '—')}</td>
+        <td class="${p.stock_actuel > 0 ? 'pos' : 'neg'}">${fmt(p.stock_actuel)} ${esc(p.unite || '')}</td>
+        <td>${money(p.prix_vente)}</td><td>${money(p.prix_vente_gros)}</td><td>${fmt(p.tva, 1)}%</td>
+      </tr>`).join('')}</table>` : '<div class="hint">Aucun produit.</div>';
+    $('rqResults').innerHTML = `
+      <h3 style="margin-top:16px">🧾 Factures</h3>${sFac}
+      <h3 style="margin-top:16px">📤 Bons / enlèvements</h3>${sBon}
+      <h3 style="margin-top:16px">📦 Enlèvements (bons d'enlèvement)</h3>${sEnl}
+      <h3 style="margin-top:16px">📦 Stock en cours</h3>${sProd}`;
+  } catch (e) { toast(e.message, true); }
+}
 
 /* ───────────── Paramètres de facturation (identité légale) ───────────── */
 async function pageParametres() {
