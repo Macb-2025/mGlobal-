@@ -11,6 +11,7 @@ export const checkPassword = (p, hash) => bcrypt.compareSync(p, hash);
 export function signToken(user) {
   return jwt.sign(
     { uid: user.id, role: user.role, did: user.distributeur_id || null,
+      pid: user.proprietaire_id || null,
       fid: user.fournisseur_id || null, username: user.username },
     JWT_SECRET,
     { expiresIn: TOKEN_TTL }
@@ -60,11 +61,33 @@ export function scopeDistributeur(req) {
 }
 
 // État de blocage d'un espace distributeur (désactivé ou gelé par le super-admin).
+// Tient compte du verrouillage en cascade : si le propriétaire parent est désactivé,
+// la boutique est bloquée même si elle est active individuellement.
 export function etatDistributeur(did) {
   if (!did) return { existe: false };
-  const d = db.prepare(`SELECT id, actif, gele FROM distributeurs WHERE id = ?`).get(did);
+  const d = db.prepare(`SELECT d.id, d.actif, d.gele, d.proprietaire_id,
+                               p.actif AS prop_actif
+                        FROM distributeurs d
+                        LEFT JOIN proprietaires p ON p.id = d.proprietaire_id
+                        WHERE d.id = ?`).get(did);
   if (!d) return { existe: false };
-  return { existe: true, actif: !!d.actif, gele: !!d.gele, bloque: !d.actif || !!d.gele };
+  const proprietaireBloque = d.proprietaire_id != null && !d.prop_actif;
+  return { existe: true, actif: !!d.actif, gele: !!d.gele, proprietaireBloque,
+    bloque: !d.actif || !!d.gele || proprietaireBloque };
+}
+
+// État d'un espace propriétaire (désactivé à distance par le super-admin).
+export function etatProprietaire(pid) {
+  if (!pid) return { existe: false };
+  const p = db.prepare(`SELECT id, actif FROM proprietaires WHERE id = ?`).get(pid);
+  if (!p) return { existe: false };
+  return { existe: true, actif: !!p.actif, bloque: !p.actif };
+}
+
+// Boutiques (ids) appartenant à un propriétaire.
+export function boutiquesDuProprietaire(pid) {
+  if (!pid) return [];
+  return db.prepare(`SELECT id FROM distributeurs WHERE proprietaire_id = ?`).all(pid).map(r => r.id);
 }
 
 // Interdit aux super-admins l'accès aux données métier des distributeurs.
@@ -85,12 +108,21 @@ export function denyFournisseur(req, res, next) {
 // Bloque toute action si l'espace du distributeur est désactivé ou gelé.
 export function requireEspaceActif(req, res, next) {
   if (req.user.role === 'superadmin') return next();
+  // Compte propriétaire : son espace est bloqué si désactivé par le super-admin.
+  if (req.user.role === 'proprietaire') {
+    const ep = etatProprietaire(req.user.pid);
+    if (!ep.existe) return res.status(403).json({ error: 'Espace propriétaire introuvable' });
+    if (ep.bloque) return res.status(403).json({ error: 'Espace propriétaire désactivé par le super-admin' });
+    return next();
+  }
   const e = etatDistributeur(req.user.did);
   if (!e.existe) return res.status(403).json({ error: 'Espace distributeur introuvable' });
   if (e.bloque)
     return res.status(403).json({ error: e.gele
       ? 'Espace gelé par le super-admin : accès bloqué'
-      : 'Espace désactivé par le super-admin' });
+      : e.proprietaireBloque
+        ? 'Espace propriétaire désactivé par le super-admin'
+        : 'Espace désactivé par le super-admin' });
   next();
 }
 

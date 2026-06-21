@@ -9,9 +9,13 @@ r.use(requireAuth);
 
 const codeFournisseur = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
 
-// Rôles d'un espace distributeur. 'operateur' est conservé (compatibilité des
-// comptes existants) mais remplacé par 'comptable' et 'assistante' à la création.
-const ROLES_DISTRIB = ['admin', 'superviseur', 'comptable', 'assistante', 'operateur'];
+// Rôles d'un espace boutique. 'operateur' est conservé (compatibilité des comptes
+// existants). Les rôles métier de terrain sont vendeur / comptable / stockiste.
+const ROLES_DISTRIB = ['admin', 'superviseur', 'comptable', 'assistante', 'vendeur', 'stockiste', 'operateur'];
+// Natures de boutique autorisées (création diversifiée par le propriétaire).
+const NATURES = ['habillement', 'epicerie', 'depot', 'autre'];
+const slugify = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 
 // ───────────── Espace : gestion des utilisateurs & rôles ─────────────
 // admin distributeur → gère SES utilisateurs ; superadmin → gère tout le monde.
@@ -75,22 +79,85 @@ r.delete('/users/:id', requireRole('superadmin', 'admin'), requireEspaceActif, (
   res.json({ ok: true });
 });
 
-// ───────────── Super-admin : distributeurs & sites ─────────────
-r.get('/distributeurs', requireRole('superadmin'), (req, res) => {
+// ───────────── Super-admin : propriétaires (réseaux) ─────────────
+// Niveau supérieur de la hiérarchie. Chaque propriétaire dispose d'un compte de
+// connexion (rôle 'proprietaire') et d'un quota de sous-boutiques.
+r.get('/proprietaires', requireRole('superadmin'), (req, res) => {
   const rows = db.prepare(`
-    SELECT d.*, (SELECT COUNT(*) FROM users u WHERE u.distributeur_id = d.id) AS nbUsers,
+    SELECT p.*,
+           (SELECT COUNT(*) FROM distributeurs d WHERE d.proprietaire_id = p.id) AS nbBoutiques,
+           (SELECT u.username FROM users u WHERE u.proprietaire_id = p.id AND u.role = 'proprietaire' LIMIT 1) AS username,
+           (SELECT u.id FROM users u WHERE u.proprietaire_id = p.id AND u.role = 'proprietaire' LIMIT 1) AS user_id
+    FROM proprietaires p ORDER BY p.nom`).all();
+  res.json(rows);
+});
+
+r.post('/proprietaires', requireRole('superadmin'), (req, res) => {
+  const { nom, telephone, email, quota, username, password } = req.body || {};
+  if (!nom) return res.status(400).json({ error: 'Nom du propriétaire requis' });
+  if (!username || !password) return res.status(400).json({ error: 'Identifiant et mot de passe requis' });
+  if (password.length < 6) return res.status(400).json({ error: 'Mot de passe : 6 caractères minimum' });
+  const q = Math.max(0, parseInt(quota, 10) || 1);
+  if (db.prepare(`SELECT 1 FROM users WHERE username = ?`).get(String(username).trim()))
+    return res.status(409).json({ error: 'Cet identifiant existe déjà' });
+  try {
+    const tx = db.transaction(() => {
+      const p = db.prepare(`INSERT INTO proprietaires (nom, telephone, email, quota_boutiques)
+        VALUES (?,?,?,?)`).run(nom, telephone || '', email || '', q);
+      const u = db.prepare(`INSERT INTO users (proprietaire_id, username, password_hash, full_name, role)
+        VALUES (?,?,?,?, 'proprietaire')`)
+        .run(p.lastInsertRowid, String(username).trim(), hashPassword(password), nom);
+      return { proprietaireId: p.lastInsertRowid, userId: u.lastInsertRowid };
+    });
+    res.json({ ok: true, ...tx() });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Modifie quota / activation (cascade) / coordonnées d'un propriétaire.
+r.patch('/proprietaires/:id', requireRole('superadmin'), (req, res) => {
+  const p = db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Propriétaire introuvable' });
+  const { nom, telephone, email, quota, actif, password } = req.body || {};
+  if (nom !== undefined) db.prepare(`UPDATE proprietaires SET nom = ? WHERE id = ?`).run(nom, p.id);
+  if (telephone !== undefined) db.prepare(`UPDATE proprietaires SET telephone = ? WHERE id = ?`).run(telephone, p.id);
+  if (email !== undefined) db.prepare(`UPDATE proprietaires SET email = ? WHERE id = ?`).run(email, p.id);
+  if (quota !== undefined) db.prepare(`UPDATE proprietaires SET quota_boutiques = ? WHERE id = ?`).run(Math.max(0, parseInt(quota, 10) || 0), p.id);
+  if (actif !== undefined) db.prepare(`UPDATE proprietaires SET actif = ? WHERE id = ?`).run(actif ? 1 : 0, p.id);
+  if (password) {
+    if (String(password).length < 6) return res.status(400).json({ error: 'Mot de passe : 6 caractères minimum' });
+    db.prepare(`UPDATE users SET password_hash = ? WHERE proprietaire_id = ? AND role = 'proprietaire'`)
+      .run(hashPassword(password), p.id);
+  }
+  res.json({ ok: true, proprietaire: db.prepare(`SELECT id, nom, quota_boutiques, actif FROM proprietaires WHERE id = ?`).get(p.id) });
+});
+
+// ───────────── Super-admin : distributeurs (boutiques) & sites ─────────────
+r.get('/distributeurs', requireRole('superadmin'), (req, res) => {
+  const pid = req.query.proprietaireId;
+  const where = pid ? `WHERE d.proprietaire_id = ${Number(pid)}` : '';
+  const rows = db.prepare(`
+    SELECT d.*, p.nom AS proprietaire_nom,
+           (SELECT COUNT(*) FROM users u WHERE u.distributeur_id = d.id) AS nbUsers,
            (SELECT COUNT(*) FROM bons_commande b WHERE b.distributeur_id = d.id) AS nbBons
-    FROM distributeurs d ORDER BY d.nom`).all();
+    FROM distributeurs d LEFT JOIN proprietaires p ON p.id = d.proprietaire_id
+    ${where} ORDER BY p.nom, d.nom`).all();
   res.json(rows);
 });
 
 r.post('/distributeurs', requireRole('superadmin'), (req, res) => {
-  const { nom, slug } = req.body || {};
+  const { nom, slug, proprietaireId, nature } = req.body || {};
   if (!nom) return res.status(400).json({ error: 'Nom requis' });
-  const s = (slug || nom).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!proprietaireId) return res.status(400).json({ error: 'Propriétaire requis' });
+  const prop = db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(proprietaireId);
+  if (!prop) return res.status(404).json({ error: 'Propriétaire introuvable' });
+  const nbActuel = db.prepare(`SELECT COUNT(*) n FROM distributeurs WHERE proprietaire_id = ?`).get(proprietaireId).n;
+  if (nbActuel >= prop.quota_boutiques)
+    return res.status(403).json({ error: `Quota atteint (${nbActuel}/${prop.quota_boutiques} boutiques)` });
+  const nat = NATURES.includes(nature) ? nature : 'autre';
+  const s = slugify(slug || nom);
   try {
-    const info = db.prepare(`INSERT INTO distributeurs (slug, nom) VALUES (?,?)`).run(s, nom);
+    const info = db.prepare(`INSERT INTO distributeurs (slug, nom, proprietaire_id, nature) VALUES (?,?,?,?)`)
+      .run(s, nom, proprietaireId, nat);
     res.json({ ok: true, id: info.lastInsertRowid });
   } catch {
     res.status(409).json({ error: 'Ce distributeur existe déjà' });

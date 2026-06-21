@@ -27,6 +27,19 @@ CREATE TABLE IF NOT EXISTS sites (
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Propriétaires (réseaux de commerces). Niveau supérieur de la hiérarchie :
+-- un propriétaire possède plusieurs sous-boutiques (distributeurs) dans la limite
+-- de son quota. Le super-admin contrôle l'activation (cascade sur les boutiques).
+CREATE TABLE IF NOT EXISTS proprietaires (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  nom              TEXT NOT NULL,
+  telephone        TEXT,
+  email            TEXT,
+  quota_boutiques  INTEGER NOT NULL DEFAULT 1,  -- nb max de sous-boutiques autorisées
+  actif            INTEGER NOT NULL DEFAULT 1,   -- 0 = espace propriétaire désactivé (cascade)
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS distributeurs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   slug        TEXT NOT NULL UNIQUE,
@@ -312,6 +325,11 @@ function addColumn(table, col, ddl) {
   }
 }
 addColumn('distributeurs', 'gele', 'gele INTEGER NOT NULL DEFAULT 0');
+// Hiérarchie à 3 niveaux : rattachement d'une boutique à son propriétaire + nature.
+addColumn('distributeurs', 'proprietaire_id', 'proprietaire_id INTEGER REFERENCES proprietaires(id) ON DELETE CASCADE');
+addColumn('distributeurs', 'nature', "nature TEXT NOT NULL DEFAULT 'autre'"); // habillement|epicerie|depot|autre
+// Compte propriétaire (rôle 'proprietaire') = titulaire de l'espace central (hub).
+addColumn('users', 'proprietaire_id', 'proprietaire_id INTEGER REFERENCES proprietaires(id) ON DELETE CASCADE');
 // Compte fournisseur (rôle 'fournisseur') rattaché à une entité fournisseur.
 addColumn('users', 'fournisseur_id', 'fournisseur_id INTEGER REFERENCES fournisseurs(id) ON DELETE CASCADE');
 addColumn('bons_commande', 'numero', 'numero INTEGER');
@@ -385,6 +403,24 @@ function backfillBons() {
   });
   tx();
   console.log(`[migration] ${ordered.length} bon(s) repris (numéro + signature)`);
+}
+
+// Rattache les espaces existants (sans propriétaire) à un propriétaire par défaut,
+// afin que la hiérarchie à 3 niveaux soit cohérente sur les bases déjà en service.
+backfillProprietaires();
+function backfillProprietaires() {
+  const orphelins = db.prepare(`SELECT id FROM distributeurs WHERE proprietaire_id IS NULL`).all();
+  if (!orphelins.length) return;
+  let prop = db.prepare(`SELECT id FROM proprietaires ORDER BY id LIMIT 1`).get();
+  if (!prop) {
+    const info = db.prepare(`INSERT INTO proprietaires (nom, quota_boutiques) VALUES (?, ?)`)
+      .run('Réseau principal', Math.max(orphelins.length, 1));
+    prop = { id: info.lastInsertRowid };
+  }
+  const setProp = db.prepare(`UPDATE distributeurs SET proprietaire_id = ? WHERE id = ?`);
+  const tx = db.transaction(() => { for (const d of orphelins) setProp.run(prop.id, d.id); });
+  tx();
+  console.log(`[migration] ${orphelins.length} boutique(s) rattachée(s) au propriétaire #${prop.id}`);
 }
 
 // ── Amorçage : super-admin mGlobal + site par défaut ──
