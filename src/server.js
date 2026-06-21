@@ -50,7 +50,7 @@ const server = http.createServer(app);
 initRealtime(server); // WebSocket temps réel (/ws)
 
 server.listen(PORT, () => {
-  console.log(`mGlobal Cloud opérationnel sur le port ${PORT}`);
+  console.log(`mGlobal Business opérationnel sur le port ${PORT}`);
 });
 
 export default app;

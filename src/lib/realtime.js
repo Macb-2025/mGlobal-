@@ -49,7 +49,7 @@ export function initRealtime(server) {
     }
   }, 30000);
   wss.on('close', () => clearInterval(ping));
-  console.log('[mGlobal Cloud] WebSocket temps réel prêt sur /ws');
+  console.log('[mGlobal Business] WebSocket temps réel prêt sur /ws');
 }
 
 // Diffusion ciblée.

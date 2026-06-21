@@ -1,6 +1,6 @@
 {
-  "name": "mGlobal Cloud",
-  "short_name": "mGlobal",
+  "name": "mGlobal Business",
+  "short_name": "mGlobal Business",
   "description": "Gestion pont bascule : facturation, comptabilité, relicat et stock.",
   "start_url": "/",
   "scope": "/",
