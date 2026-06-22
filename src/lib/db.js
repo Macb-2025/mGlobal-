@@ -40,6 +40,22 @@ CREATE TABLE IF NOT EXISTS proprietaires (
   created_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Paiements d'abonnement (Module 2). Validation manuelle par le super-admin :
+-- chaque paiement prolonge l'échéance d'abonnement du propriétaire.
+CREATE TABLE IF NOT EXISTS paiements (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  proprietaire_id INTEGER NOT NULL REFERENCES proprietaires(id) ON DELETE CASCADE,
+  montant         REAL NOT NULL DEFAULT 0,
+  methode         TEXT,            -- especes|virement|wave|orange_money|... (libre)
+  mois            INTEGER NOT NULL DEFAULT 1, -- nb de mois couverts
+  periode_debut   TEXT,            -- échéance avant paiement
+  periode_fin     TEXT,            -- nouvelle échéance après paiement
+  reference       TEXT,
+  note            TEXT,
+  valide_par      TEXT,            -- username du super-admin
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS distributeurs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   slug        TEXT NOT NULL UNIQUE,
@@ -325,6 +341,10 @@ function addColumn(table, col, ddl) {
   }
 }
 addColumn('distributeurs', 'gele', 'gele INTEGER NOT NULL DEFAULT 0');
+// Abonnement du propriétaire (Module 2) : montant mensuel, échéance, statut.
+addColumn('proprietaires', 'abonnement_montant', 'abonnement_montant REAL NOT NULL DEFAULT 0');
+addColumn('proprietaires', 'abonnement_echeance', 'abonnement_echeance TEXT'); // date AAAA-MM-JJ
+addColumn('proprietaires', 'abonnement_statut', "abonnement_statut TEXT NOT NULL DEFAULT 'essai'"); // essai|actif|expire|suspendu
 // Hiérarchie à 3 niveaux : rattachement d'une boutique à son propriétaire + nature.
 addColumn('distributeurs', 'proprietaire_id', 'proprietaire_id INTEGER REFERENCES proprietaires(id) ON DELETE CASCADE');
 addColumn('distributeurs', 'nature', "nature TEXT NOT NULL DEFAULT 'autre'"); // habillement|epicerie|depot|autre

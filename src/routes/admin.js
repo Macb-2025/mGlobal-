@@ -3,6 +3,7 @@ import { customAlphabet } from 'nanoid';
 import db from '../lib/db.js';
 import { requireAuth, requireRole, hashPassword, requireEspaceActif } from '../lib/auth.js';
 import { newKey } from '../lib/db.js';
+import { abonnementResume, ajouterMois } from '../lib/abonnement.js';
 
 const r = Router();
 r.use(requireAuth);
@@ -89,7 +90,7 @@ r.get('/proprietaires', requireRole('superadmin'), (req, res) => {
            (SELECT u.username FROM users u WHERE u.proprietaire_id = p.id AND u.role = 'proprietaire' LIMIT 1) AS username,
            (SELECT u.id FROM users u WHERE u.proprietaire_id = p.id AND u.role = 'proprietaire' LIMIT 1) AS user_id
     FROM proprietaires p ORDER BY p.nom`).all();
-  res.json(rows);
+  res.json(rows.map(p => ({ ...p, abonnement: abonnementResume(p) })));
 });
 
 r.post('/proprietaires', requireRole('superadmin'), (req, res) => {
@@ -117,18 +118,69 @@ r.post('/proprietaires', requireRole('superadmin'), (req, res) => {
 r.patch('/proprietaires/:id', requireRole('superadmin'), (req, res) => {
   const p = db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Propriétaire introuvable' });
-  const { nom, telephone, email, quota, actif, password } = req.body || {};
+  const { nom, telephone, email, quota, actif, password,
+          abonnementMontant, abonnementEcheance, abonnementStatut } = req.body || {};
   if (nom !== undefined) db.prepare(`UPDATE proprietaires SET nom = ? WHERE id = ?`).run(nom, p.id);
   if (telephone !== undefined) db.prepare(`UPDATE proprietaires SET telephone = ? WHERE id = ?`).run(telephone, p.id);
   if (email !== undefined) db.prepare(`UPDATE proprietaires SET email = ? WHERE id = ?`).run(email, p.id);
   if (quota !== undefined) db.prepare(`UPDATE proprietaires SET quota_boutiques = ? WHERE id = ?`).run(Math.max(0, parseInt(quota, 10) || 0), p.id);
   if (actif !== undefined) db.prepare(`UPDATE proprietaires SET actif = ? WHERE id = ?`).run(actif ? 1 : 0, p.id);
+  if (abonnementMontant !== undefined) db.prepare(`UPDATE proprietaires SET abonnement_montant = ? WHERE id = ?`).run(Math.max(0, Number(abonnementMontant) || 0), p.id);
+  if (abonnementEcheance !== undefined) db.prepare(`UPDATE proprietaires SET abonnement_echeance = ? WHERE id = ?`).run(abonnementEcheance || null, p.id);
+  if (abonnementStatut !== undefined && ['essai', 'actif', 'expire', 'suspendu'].includes(abonnementStatut))
+    db.prepare(`UPDATE proprietaires SET abonnement_statut = ? WHERE id = ?`).run(abonnementStatut, p.id);
   if (password) {
     if (String(password).length < 6) return res.status(400).json({ error: 'Mot de passe : 6 caractères minimum' });
     db.prepare(`UPDATE users SET password_hash = ? WHERE proprietaire_id = ? AND role = 'proprietaire'`)
       .run(hashPassword(password), p.id);
   }
-  res.json({ ok: true, proprietaire: db.prepare(`SELECT id, nom, quota_boutiques, actif FROM proprietaires WHERE id = ?`).get(p.id) });
+  const maj = db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(p.id);
+  res.json({ ok: true, proprietaire: { ...maj, abonnement: abonnementResume(maj) } });
+});
+
+// Enregistre un paiement manuel : prolonge l'échéance de `mois` et réactive l'abonnement.
+r.post('/proprietaires/:id/paiements', requireRole('superadmin'), (req, res) => {
+  const p = db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Propriétaire introuvable' });
+  const { montant, methode, mois, reference, note } = req.body || {};
+  const nbMois = Math.max(1, parseInt(mois, 10) || 1);
+  // Repart de l'échéance courante si encore valide, sinon d'aujourd'hui.
+  const aujourdhui = new Date().toISOString().slice(0, 10);
+  const base = (p.abonnement_echeance && p.abonnement_echeance >= aujourdhui) ? p.abonnement_echeance : aujourdhui;
+  const nouvelle = ajouterMois(base, nbMois);
+  const tx = db.transaction(() => {
+    db.prepare(`INSERT INTO paiements (proprietaire_id, montant, methode, mois, periode_debut, periode_fin, reference, note, valide_par)
+      VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(p.id, Math.max(0, Number(montant) || 0), methode || '', nbMois, p.abonnement_echeance || null, nouvelle,
+           reference || '', note || '', req.user.username || 'superadmin');
+    db.prepare(`UPDATE proprietaires SET abonnement_echeance = ?, abonnement_statut = 'actif' WHERE id = ?`).run(nouvelle, p.id);
+  });
+  tx();
+  const maj = db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(p.id);
+  res.json({ ok: true, echeance: nouvelle, proprietaire: { ...maj, abonnement: abonnementResume(maj) } });
+});
+
+r.get('/proprietaires/:id/paiements', requireRole('superadmin'), (req, res) => {
+  const rows = db.prepare(`SELECT * FROM paiements WHERE proprietaire_id = ? ORDER BY created_at DESC`).all(req.params.id);
+  res.json(rows);
+});
+
+// Tableau de bord super-admin : compteurs globaux.
+r.get('/stats', requireRole('superadmin'), (req, res) => {
+  const props = db.prepare(`SELECT * FROM proprietaires`).all();
+  const compteurs = { essai: 0, actif: 0, expire: 0, suspendu: 0 };
+  for (const p of props) compteurs[abonnementResume(p).statut]++;
+  const nbBoutiques = db.prepare(`SELECT COUNT(*) n FROM distributeurs`).get().n;
+  const nbCollaborateurs = db.prepare(`SELECT COUNT(*) n FROM users WHERE role NOT IN ('superadmin','fournisseur')`).get().n;
+  const revenus = db.prepare(`SELECT COALESCE(SUM(montant),0) t,
+    COALESCE(SUM(CASE WHEN created_at >= date('now','start of month') THEN montant ELSE 0 END),0) mois
+    FROM paiements`).get();
+  res.json({
+    nbProprietaires: props.length, nbBoutiques, nbCollaborateurs,
+    abonnements: compteurs,
+    propActifs: props.filter(p => p.actif).length,
+    revenusTotaux: revenus.t, revenusMois: revenus.mois
+  });
 });
 
 // ───────────── Super-admin : distributeurs (boutiques) & sites ─────────────

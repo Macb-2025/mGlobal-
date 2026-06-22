@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../lib/db.js';
 import { requireAuth, requireRole, requireEspaceActif, hashPassword } from '../lib/auth.js';
+import { abonnementResume } from '../lib/abonnement.js';
 
 // Espace Central Propriétaire (Hub). Gère SES sous-boutiques et SES collaborateurs.
 // Le périmètre est strictement limité au propriétaire connecté (req.user.pid).
@@ -20,12 +21,17 @@ function boutiqueDuProprietaire(id, pid) {
 
 // Résumé de l'espace propriétaire (quota, nombre de boutiques, collaborateurs).
 r.get('/me', (req, res) => {
-  const p = db.prepare(`SELECT id, nom, telephone, email, quota_boutiques, actif FROM proprietaires WHERE id = ?`).get(req.user.pid);
+  const p = db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(req.user.pid);
   if (!p) return res.status(404).json({ error: 'Propriétaire introuvable' });
   const nbBoutiques = db.prepare(`SELECT COUNT(*) n FROM distributeurs WHERE proprietaire_id = ?`).get(p.id).n;
   const nbCollabs = db.prepare(`SELECT COUNT(*) n FROM users
     WHERE role != 'fournisseur' AND distributeur_id IN (SELECT id FROM distributeurs WHERE proprietaire_id = ?)`).get(p.id).n;
-  res.json({ ...p, nbBoutiques, nbCollabs, quotaDisponible: Math.max(0, p.quota_boutiques - nbBoutiques) });
+  res.json({
+    id: p.id, nom: p.nom, telephone: p.telephone, email: p.email,
+    quota_boutiques: p.quota_boutiques, actif: p.actif,
+    nbBoutiques, nbCollabs, quotaDisponible: Math.max(0, p.quota_boutiques - nbBoutiques),
+    abonnement: abonnementResume(p)
+  });
 });
 
 // ───────────── Sous-boutiques ─────────────
