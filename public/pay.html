@@ -37,7 +37,9 @@
   <script>
     const params = new URLSearchParams(location.search);
     const token = params.get('token');
+    const echec = params.get('echec') === '1';
     const fmt = (n) => Number(n || 0).toLocaleString('fr-FR') + ' FCFA';
+    let pollTimer = null;
     async function charger() {
       if (!token) { document.getElementById('state').textContent = 'Jeton manquant.'; return; }
       try {
@@ -45,8 +47,28 @@
         if (p.error) throw new Error(p.error);
         document.getElementById('amount').textContent = fmt(p.montant);
         document.getElementById('months').textContent = p.mois + ' mois d\u2019abonnement';
-        if (p.statut === 'valide') montrerSucces();
+        if (p.statut === 'valide') return montrerSucces();
+        if (p.statut === 'echoue' || echec) {
+          document.getElementById('actions').style.display = 'none';
+          document.getElementById('state').innerHTML = '<span class="ko">Paiement non abouti.</span><br><a href="/">Retour</a>';
+          return;
+        }
+        // Fournisseur réel : la confirmation arrive par webhook → on interroge l'état.
+        if (p.provider && p.provider !== 'simulation') {
+          document.querySelector('.badge-simu').textContent = (p.provider || '').toUpperCase();
+          document.getElementById('actions').style.display = 'none';
+          document.getElementById('state').innerHTML = '<span class="muted">En attente de confirmation du paiement…</span>';
+          pollTimer = setInterval(verifier, 3000);
+        }
       } catch (e) { document.getElementById('state').textContent = e.message; }
+    }
+    async function verifier() {
+      try {
+        const p = await (await fetch('/api/paiements/etat/' + encodeURIComponent(token))).json();
+        if (p.statut === 'valide') { clearInterval(pollTimer); montrerSucces(); }
+        else if (p.statut === 'echoue') { clearInterval(pollTimer);
+          document.getElementById('state').innerHTML = '<span class="ko">Paiement non abouti.</span><br><a href="/">Retour</a>'; }
+      } catch {}
     }
     function montrerSucces() {
       document.getElementById('actions').style.display = 'none';

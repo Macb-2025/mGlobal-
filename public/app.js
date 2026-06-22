@@ -277,7 +277,7 @@ function applyAbonnement(a) {
       <h2>Espace bloqué — abonnement échu</h2>
       <p>L'abonnement mGlobal Business de ce réseau est arrivé à expiration${ech}.</p>
       <p>${proprio ? 'Réglez votre abonnement en ligne pour rétablir l\'accès immédiatement, ou contactez le super-administrateur.' : 'Contactez le propriétaire du réseau ou le super-administrateur pour rétablir l\'accès.'}</p>
-      ${proprio ? '<button class="btn" onclick="payerEnLigne(1)">💳 Payer en ligne</button>' : ''}
+      ${proprio ? '<button class="btn" onclick="ouvrirPaiement()">💳 Payer en ligne</button>' : ''}
       <button class="btn sec" onclick="logout()">Se déconnecter</button>
     </div>`;
     return;
@@ -2326,15 +2326,20 @@ async function pageProprietaireAbonnement() {
       <div class="hint">Réglez votre abonnement par paiement en ligne ; votre espace est réactivé automatiquement après confirmation.</div>
       <div class="filters" style="margin-top:8px">
         <span><label>Nombre de mois</label><input id="payMois" type="number" min="1" value="1"></span>
+        <span><label>Moyen de paiement</label><select id="payProvider">${providerOptions(info.fournisseurs)}</select></span>
         <span><label>Total à payer</label><input id="payTotal" value="${money(mm)}" disabled></span>
-        <button class="btn" id="payGo">💳 Payer en ligne</button>
+        <button class="btn" id="payGo">💳 Payer</button>
       </div>
     </div>
     <div class="panel"><h3>Historique des paiements</h3>${histPaiementsTable(hist)}</div>`;
     const maj = () => { $('payTotal').value = money((Number($('payMois').value) || 1) * mm); };
     $('payMois').oninput = maj;
-    $('payGo').onclick = () => payerEnLigne(Number($('payMois').value) || 1);
+    $('payGo').onclick = () => payerEnLigne(Number($('payMois').value) || 1, $('payProvider').value);
   } catch (e) { toast(e.message, true); c.innerHTML = `<div class="panel"><div class="hint">${esc(e.message)}</div></div>`; }
+}
+function providerOptions(fournisseurs) {
+  const list = (fournisseurs && fournisseurs.length) ? fournisseurs : [{ id: 'simulation', label: 'Démonstration', configure: true }];
+  return list.map(f => `<option value="${f.id}"${f.configure ? '' : ' disabled'}>${esc(f.label)}${f.configure ? '' : ' (non configuré)'}</option>`).join('');
 }
 function histPaiementsTable(hist) {
   if (!hist || !hist.length) return '<div class="hint">Aucun paiement.</div>';
@@ -2349,11 +2354,17 @@ function histPaiementsTable(hist) {
       <td><span class="tag ${p.statut === 'valide' ? 'on' : p.statut === 'echoue' ? 'off' : ''}">${p.statut}</span></td>
     </tr>`).join('')}</table>`;
 }
+// Depuis l'écran de blocage : masque l'overlay et ouvre la page de paiement complète
+// (les routes de paiement ne sont pas soumises au verrouillage d'abonnement).
+function ouvrirPaiement() {
+  const bl = $('aboBlock'); if (bl) bl.classList.add('hidden');
+  go('proprietaireAbonnement');
+}
 // Lance le paiement en ligne : ouvre la page de la passerelle puis surveille la
 // confirmation (le webhook réactive l'abonnement côté serveur).
-async function payerEnLigne(mois) {
+async function payerEnLigne(mois, provider) {
   try {
-    const r = await api('/paiements/initier', { method: 'POST', body: JSON.stringify({ mois }) });
+    const r = await api('/paiements/initier', { method: 'POST', body: JSON.stringify({ mois, provider }) });
     const win = window.open(r.paymentUrl, 'mglobal_paiement');
     toast('Page de paiement ouverte…');
     const debut = Date.now();

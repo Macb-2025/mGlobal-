@@ -21,7 +21,8 @@ import paiementsRouter from './routes/paiements.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
-app.use(express.json({ limit: '8mb' }));
+// Conserve le corps brut des requêtes (vérification de signature des webhooks de paiement).
+app.use(express.json({ limit: '8mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
 
 // Interfaces statiques (SPA distributeur + portails publics)
