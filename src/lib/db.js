@@ -328,6 +328,21 @@ CREATE TABLE IF NOT EXISTS mouvements_stock (
 CREATE INDEX IF NOT EXISTS idx_mvt_dist ON mouvements_stock(distributeur_id);
 CREATE INDEX IF NOT EXISTS idx_mvt_prod ON mouvements_stock(produit_id);
 
+-- Transferts de stock entre boutiques d'un même propriétaire (Module 3).
+CREATE TABLE IF NOT EXISTS transferts_stock (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  proprietaire_id INTEGER NOT NULL REFERENCES proprietaires(id) ON DELETE CASCADE,
+  source_id       INTEGER NOT NULL REFERENCES distributeurs(id) ON DELETE CASCADE,
+  dest_id         INTEGER NOT NULL REFERENCES distributeurs(id) ON DELETE CASCADE,
+  produit_nom     TEXT NOT NULL,
+  quantite        REAL NOT NULL DEFAULT 0,
+  unite           TEXT,
+  note            TEXT,
+  par             TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_transf_prop ON transferts_stock(proprietaire_id);
+
 INSERT OR IGNORE INTO live (id, connected, stable, kg, valeur, unite, ts)
 VALUES (1, 0, 0, 0, 0, 't', datetime('now'));
 `);
