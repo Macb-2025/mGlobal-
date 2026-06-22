@@ -1,4 +1,4 @@
-# Guide complet d'hébergement — mGlobal Cloud
+# Guide complet d'hébergement — mGlobal Business
 
 Ce guide explique comment mettre la plateforme **en ligne, accessible partout dans le monde**.
 Choisissez **une** des 3 options. La **A** est la plus professionnelle (domaine + HTTPS).
