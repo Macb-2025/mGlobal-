@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import db from '../lib/db.js';
-import { requireAuth, requireRole, requireEspaceActif, hashPassword } from '../lib/auth.js';
+import { requireAuth, requireRole, requireEspaceActif, hashPassword, requireAbonnementActif } from '../lib/auth.js';
 import { abonnementResume } from '../lib/abonnement.js';
 
 // Espace Central Propriétaire (Hub). Gère SES sous-boutiques et SES collaborateurs.
 // Le périmètre est strictement limité au propriétaire connecté (req.user.pid).
 const r = Router();
-r.use(requireAuth, requireRole('proprietaire'), requireEspaceActif);
+r.use(requireAuth, requireRole('proprietaire'), requireEspaceActif, requireAbonnementActif);
 
 const NATURES = ['habillement', 'epicerie', 'depot', 'autre'];
 // Rôles de terrain qu'un propriétaire peut attribuer dans ses boutiques.

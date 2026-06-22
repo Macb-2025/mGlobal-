@@ -20,6 +20,33 @@ export function ajouterMois(dateStr, n) {
   return d.toISOString().slice(0, 10);
 }
 
+// Jours de grâce en lecture seule après l'échéance avant blocage total.
+export const JOURS_GRACE = 7;
+// Seuil d'alerte avant échéance (calendrier 30 → 6 jours).
+export const ALERTE_JOURS = 30;
+export const ALERTE_URGENTE_JOURS = 6;
+
+// Politique de verrouillage en cascade (Module 6) déduite de l'abonnement :
+//   mode = 'actif' | 'alerte' | 'lecture_seule' | 'bloque'
+// - 30→0 j avant l'échéance : alerte (accès complet, bandeau de rappel).
+// - échéance dépassée (≤ JOURS_GRACE) : lecture seule (écritures bloquées).
+// - au-delà de la grâce ou statut 'suspendu' : blocage total (écran de blocage).
+export function politiqueAbonnement(p) {
+  const a = abonnementResume(p);
+  const jr = a.joursRestants;
+  let mode = 'actif';
+  if (a.statut === 'suspendu') mode = 'bloque';
+  else if (a.statut === 'essai' || jr === null) mode = 'actif';
+  else if (jr < -JOURS_GRACE) mode = 'bloque';
+  else if (jr < 0) mode = 'lecture_seule';
+  else if (jr <= ALERTE_JOURS) mode = 'alerte';
+  return {
+    ...a, mode, joursGrace: JOURS_GRACE,
+    alerteUrgente: mode === 'alerte' && jr <= ALERTE_URGENTE_JOURS,
+    ecriture: mode === 'actif' || mode === 'alerte' // false = lecture seule / bloqué
+  };
+}
+
 // Résumé d'abonnement pour un propriétaire (ligne SQL `proprietaires`).
 // statut effectif : suspendu > essai (pas d'échéance) > expire (échéance dépassée) > actif.
 export function abonnementResume(p) {
