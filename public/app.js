@@ -111,7 +111,10 @@ async function api(path, opts = {}) {
   if (res.status === 401) { logout(); throw new Error('Session expirée'); }
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('json') ? await res.json() : await res.text();
-  if (!res.ok) throw new Error((data && data.error) || 'Erreur serveur');
+  if (!res.ok) {
+    if (data && data.abonnement && typeof applyAbonnement === 'function') applyAbonnement(data.abonnement);
+    throw new Error((data && data.error) || 'Erreur serveur');
+  }
   if (method !== 'GET') updateNetBadge();
   return data;
 }
@@ -137,6 +140,8 @@ function logout() {
   if (S.liveTimer) clearInterval(S.liveTimer);
   if (S.ws) { try { S.ws.close(); } catch {} S.ws = null; }
   $('app').classList.add('hidden'); $('login').classList.remove('hidden');
+  const bl = $('aboBlock'); if (bl) bl.classList.add('hidden');
+  const bar = $('aboBar'); if (bar) bar.classList.add('hidden');
 }
 
 const ROLE_LABEL = { superadmin: 'Super-admin mGlobal', proprietaire: 'Propriétaire',
@@ -250,7 +255,39 @@ function enterApp() {
     : u.role === 'proprietaire' ? 'proprietaireDashboard'
     : u.role === 'fournisseur' ? 'espaceFournisseur' : 'dashboard';
   go(accueil);
+  applyAbonnement();
   connectWS();
+}
+
+// Verrouillage en cascade (Module 6) : bandeau d'alerte / lecture seule, ou écran
+// de blocage total selon la politique d'abonnement renvoyée par le serveur.
+function applyAbonnement(a) {
+  if (a) S.user.abonnement = a; else a = S.user && S.user.abonnement;
+  const bar = $('aboBar'), block = $('aboBlock');
+  if (!bar || !block) return;
+  bar.classList.add('hidden'); block.classList.add('hidden');
+  if (!a || a.mode === 'actif') return;
+  const ech = a.echeance ? ` (échéance ${a.echeance})` : '';
+  if (a.mode === 'bloque') {
+    block.classList.remove('hidden');
+    const proprio = S.user.role === 'proprietaire';
+    block.innerHTML = `<div class="card">
+      <div class="lock">🔒</div>
+      <h2>Espace bloqué — abonnement échu</h2>
+      <p>L'abonnement mGlobal Business de ce réseau est arrivé à expiration${ech}.</p>
+      <p>${proprio ? 'Veuillez régulariser votre abonnement auprès du super-administrateur pour rétablir l\'accès.' : 'Contactez le propriétaire du réseau ou le super-administrateur pour rétablir l\'accès.'}</p>
+      <button class="btn" onclick="logout()">Se déconnecter</button>
+    </div>`;
+    return;
+  }
+  bar.classList.remove('hidden');
+  if (a.mode === 'lecture_seule') {
+    bar.className = 'abo-bar lvl-ro';
+    bar.textContent = `🔒 Abonnement échu${ech} : espace en LECTURE SEULE. Réglez l'abonnement pour réactiver les saisies.`;
+  } else { // alerte
+    bar.className = 'abo-bar ' + (a.alerteUrgente ? 'lvl-urgent' : 'lvl-alerte');
+    bar.textContent = `⚠ Abonnement à renouveler : expire dans ${a.joursRestants} jour(s)${ech}.`;
+  }
 }
 
 // Historique de navigation (pour le bouton « Retour »).

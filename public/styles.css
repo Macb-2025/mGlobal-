@@ -205,3 +205,21 @@ table.fa-lignes td.r { text-align:right; font-weight:700; color:var(--accent); w
 .net-badge.net-on  { background: rgba(0,230,118,.12); color: #16a34a; }
 .net-badge.net-off { background: rgba(239,68,68,.12); color: #b91c1c; }
 .net-badge.net-sync{ background: rgba(245,158,11,.14); color: #b45309; }
+
+/* Verrouillage en cascade lié à l'abonnement (Module 6) */
+.abo-bar { padding: 10px 16px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--line); }
+.abo-bar.lvl-alerte  { background: rgba(245,158,11,.14); color: #b45309; }
+.abo-bar.lvl-urgent  { background: rgba(239,68,68,.14); color: #b91c1c; }
+.abo-bar.lvl-ro      { background: rgba(239,68,68,.18); color: #991b1b; }
+.abo-block {
+  position: fixed; inset: 0; z-index: 9999; background: rgba(15,23,42,.92);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.abo-block .card {
+  max-width: 520px; background: #fff; border-radius: 16px; padding: 28px 26px; text-align: center;
+  box-shadow: 0 20px 60px rgba(0,0,0,.4);
+}
+.abo-block h2 { margin: 0 0 8px; color: #b91c1c; font-size: 22px; }
+.abo-block p { color: #334155; margin: 6px 0; line-height: 1.5; }
+.abo-block .lock { font-size: 44px; }
+.abo-block .btn { margin-top: 14px; }

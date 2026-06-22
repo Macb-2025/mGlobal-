@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import db from './db.js';
+import { politiqueAbonnement } from './abonnement.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'mglobal-dev-secret-change-me';
 const TOKEN_TTL = process.env.TOKEN_TTL || '12h';
@@ -88,6 +89,39 @@ export function etatProprietaire(pid) {
 export function boutiquesDuProprietaire(pid) {
   if (!pid) return [];
   return db.prepare(`SELECT id FROM distributeurs WHERE proprietaire_id = ?`).all(pid).map(r => r.id);
+}
+
+// Propriétaire dont dépend l'espace de l'utilisateur courant (compte propriétaire
+// via pid, ou boutique via le proprietaire_id de son distributeur). null sinon.
+export function proprietaireDeUser(user) {
+  if (!user) return null;
+  if (user.pid) return db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(user.pid) || null;
+  if (user.did) {
+    return db.prepare(`SELECT p.* FROM proprietaires p
+      JOIN distributeurs d ON d.proprietaire_id = p.id WHERE d.id = ?`).get(user.did) || null;
+  }
+  return null;
+}
+
+// Politique d'abonnement (Module 6) applicable à l'espace de l'utilisateur courant.
+// null = pas d'abonnement à appliquer (super-admin, fournisseur, espace orphelin).
+export function politiqueAbonnementEspace(user) {
+  if (!user || user.role === 'superadmin' || user.role === 'fournisseur') return null;
+  const p = proprietaireDeUser(user);
+  return p ? politiqueAbonnement(p) : null;
+}
+
+// Applique le verrouillage en cascade lié à l'abonnement :
+// - mode 'bloque'        → tout accès refusé (écran de blocage côté client) ;
+// - mode 'lecture_seule' → seules les lectures (GET) sont autorisées.
+export function requireAbonnementActif(req, res, next) {
+  const pol = politiqueAbonnementEspace(req.user);
+  if (!pol) return next();
+  if (pol.mode === 'bloque')
+    return res.status(403).json({ error: 'Abonnement expiré : espace bloqué. Contactez le super-admin.', code: 'abonnement_bloque', abonnement: pol });
+  if (pol.mode === 'lecture_seule' && req.method !== 'GET')
+    return res.status(403).json({ error: 'Abonnement échu : espace en lecture seule jusqu\'au règlement.', code: 'lecture_seule', abonnement: pol });
+  next();
 }
 
 // Interdit aux super-admins l'accès aux données métier des distributeurs.
