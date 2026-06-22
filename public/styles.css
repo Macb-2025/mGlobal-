@@ -196,3 +196,12 @@ table.fa-lignes td.r { text-align:right; font-weight:700; color:var(--accent); w
 }
 .verif-bon.ok { background: rgba(0,230,118,.08); border-color: rgba(0,230,118,.4); }
 .verif-bon .btn.sec { margin-left: 4px; }
+
+/* Badge d'état de connexion (mode hybride offline) */
+.net-badge {
+  margin-left: auto; padding: 4px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.net-badge.net-on  { background: rgba(0,230,118,.12); color: #16a34a; }
+.net-badge.net-off { background: rgba(239,68,68,.12); color: #b91c1c; }
+.net-badge.net-sync{ background: rgba(245,158,11,.14); color: #b45309; }
