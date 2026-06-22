@@ -3,7 +3,8 @@ import { customAlphabet } from 'nanoid';
 import db from '../lib/db.js';
 import { requireAuth, requireRole, hashPassword, requireEspaceActif } from '../lib/auth.js';
 import { newKey } from '../lib/db.js';
-import { abonnementResume, ajouterMois } from '../lib/abonnement.js';
+import { abonnementResume } from '../lib/abonnement.js';
+import { validerPaiement } from '../lib/paiement.js';
 
 const r = Router();
 r.use(requireAuth);
@@ -143,21 +144,13 @@ r.post('/proprietaires/:id/paiements', requireRole('superadmin'), (req, res) => 
   const p = db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Propriétaire introuvable' });
   const { montant, methode, mois, reference, note } = req.body || {};
-  const nbMois = Math.max(1, parseInt(mois, 10) || 1);
-  // Repart de l'échéance courante si encore valide, sinon d'aujourd'hui.
-  const aujourdhui = new Date().toISOString().slice(0, 10);
-  const base = (p.abonnement_echeance && p.abonnement_echeance >= aujourdhui) ? p.abonnement_echeance : aujourdhui;
-  const nouvelle = ajouterMois(base, nbMois);
-  const tx = db.transaction(() => {
-    db.prepare(`INSERT INTO paiements (proprietaire_id, montant, methode, mois, periode_debut, periode_fin, reference, note, valide_par)
-      VALUES (?,?,?,?,?,?,?,?,?)`)
-      .run(p.id, Math.max(0, Number(montant) || 0), methode || '', nbMois, p.abonnement_echeance || null, nouvelle,
-           reference || '', note || '', req.user.username || 'superadmin');
-    db.prepare(`UPDATE proprietaires SET abonnement_echeance = ?, abonnement_statut = 'actif' WHERE id = ?`).run(nouvelle, p.id);
-  });
-  tx();
-  const maj = db.prepare(`SELECT * FROM proprietaires WHERE id = ?`).get(p.id);
-  res.json({ ok: true, echeance: nouvelle, proprietaire: { ...maj, abonnement: abonnementResume(maj) } });
+  try {
+    const r2 = validerPaiement({ proprietaireId: p.id, montant, methode, mois, reference, note,
+      valideePar: req.user.username || 'superadmin', type: 'manuel' });
+    res.json({ ok: true, echeance: r2.echeance, proprietaire: r2.proprietaire });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 r.get('/proprietaires/:id/paiements', requireRole('superadmin'), (req, res) => {

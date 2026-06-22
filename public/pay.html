@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Paiement — mGlobal Business</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+    .pay-card { max-width: 440px; width: 100%; background: #fff; border-radius: 16px; padding: 28px 26px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.25); text-align: center; }
+    .pay-card h1 { font-size: 20px; margin: 0 0 4px; color: #0f3d6e; }
+    .pay-card .amount { font-size: 34px; font-weight: 800; color: #0f172a; margin: 18px 0 4px; }
+    .pay-card .muted { color: #64748b; font-size: 13px; }
+    .pay-card .btn { width: 100%; margin-top: 18px; }
+    .pay-card .btn.sec { background: #e2e8f0; color: #334155; }
+    .pay-state { margin-top: 16px; font-weight: 600; }
+    .ok { color: #16a34a; } .ko { color: #b91c1c; }
+    .badge-simu { display: inline-block; background: rgba(245,158,11,.15); color: #b45309;
+      font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <div class="pay-card">
+    <div class="badge-simu">PASSERELLE DE DÉMONSTRATION</div>
+    <h1>Paiement de l'abonnement</h1>
+    <div class="muted">mGlobal Business</div>
+    <div class="amount" id="amount">—</div>
+    <div class="muted" id="months">—</div>
+    <div id="actions">
+      <button class="btn" id="ok">✅ Confirmer le paiement</button>
+      <button class="btn sec" id="ko">Simuler un échec</button>
+    </div>
+    <div class="pay-state" id="state"></div>
+  </div>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const token = params.get('token');
+    const fmt = (n) => Number(n || 0).toLocaleString('fr-FR') + ' FCFA';
+    async function charger() {
+      if (!token) { document.getElementById('state').textContent = 'Jeton manquant.'; return; }
+      try {
+        const p = await (await fetch('/api/paiements/etat/' + encodeURIComponent(token))).json();
+        if (p.error) throw new Error(p.error);
+        document.getElementById('amount').textContent = fmt(p.montant);
+        document.getElementById('months').textContent = p.mois + ' mois d\u2019abonnement';
+        if (p.statut === 'valide') montrerSucces();
+      } catch (e) { document.getElementById('state').textContent = e.message; }
+    }
+    function montrerSucces() {
+      document.getElementById('actions').style.display = 'none';
+      document.getElementById('state').innerHTML = '<span class="ok">✅ Paiement confirmé. Votre abonnement est réactivé.</span><br><a href="/">Retour à l\u2019application</a>';
+    }
+    async function envoyer(decision) {
+      document.getElementById('state').textContent = 'Traitement…';
+      try {
+        const res = await fetch('/api/paiements/webhook/simulation', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, decision })
+        });
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.error || 'Erreur');
+        if (decision === 'echec') {
+          document.getElementById('state').innerHTML = '<span class="ko">Paiement annulé.</span><br><a href="/">Retour</a>';
+        } else { montrerSucces(); }
+      } catch (e) { document.getElementById('state').innerHTML = '<span class="ko">' + e.message + '</span>'; }
+    }
+    document.getElementById('ok').onclick = () => envoyer('succes');
+    document.getElementById('ko').onclick = () => envoyer('echec');
+    charger();
+  </script>
+</body>
+</html>

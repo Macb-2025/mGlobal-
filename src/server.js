@@ -16,6 +16,7 @@ import ingestRouter from './routes/ingest.js';
 import modulesRouter from './routes/modules.js';
 import portailRouter from './routes/portail.js';
 import espaceFournisseurRouter from './routes/espaceFournisseur.js';
+import paiementsRouter from './routes/paiements.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -33,6 +34,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOS
 app.use('/api/auth', authRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/proprietaire', proprietaireRouter); // espace central propriétaire (hub)
+app.use('/api/paiements', paiementsRouter); // passerelle d'abonnement (manuel + auto + webhook public)
 app.use('/api/dashboard', dashboardRouter);
 app.use('/api/bons-commande', bonsRouter);
 app.use('/api/ingest', ingestRouter);
