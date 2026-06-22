@@ -16,6 +16,14 @@ function toast(msg, isErr = false) {
   setTimeout(() => t.remove(), 3200);
 }
 
+// Fenêtre modale générique (titre + contenu HTML), réutilise le style existant.
+function showModal(titre, html) {
+  $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+    <div class="modal"><div class="modal-head"><h3>${esc(titre)}</h3>
+      <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body">${html}</div></div></div>`;
+}
+
 async function api(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (S.token) headers.Authorization = 'Bearer ' + S.token;
@@ -56,6 +64,15 @@ const ROLE_LABEL = { superadmin: 'Super-admin mGlobal', proprietaire: 'Propriét
   fournisseur: 'Fournisseur' };
 
 const NATURE_LABEL = { habillement: 'Habillement', epicerie: 'Épicerie', depot: 'Dépôt', autre: 'Autre' };
+const ABO_LABEL = { essai: 'Essai', actif: 'Actif', expire: 'Expiré', suspendu: 'Suspendu' };
+const ABO_TAG = { essai: 'off', actif: 'on', expire: 'off', suspendu: 'off' };
+function aboTexte(a) {
+  if (!a) return '—';
+  if (a.statut === 'essai') return 'Essai (pas d\'échéance)';
+  const j = a.joursRestants;
+  if (a.statut === 'expire') return `Expiré depuis ${Math.abs(j)} j (${a.echeance})`;
+  return `${a.echeance} · ${j} j restants`;
+}
 
 function menuFor(role) {
   // Super-admin : administration (propriétaires, comptes, distributeurs), aucun accès
@@ -64,6 +81,7 @@ function menuFor(role) {
     return [
       { id: 'admin', label: '⚙ Administration' },
       { id: 'proprietaires', label: '🏢 Propriétaires' },
+      { id: 'abonnements', label: '💳 Abonnements' },
       { id: 'users', label: '🔑 Création de comptes' },
       { id: 'fournisseursComptes', label: '🚚 Espaces fournisseurs' }
     ];
@@ -165,6 +183,7 @@ function go(page, fromBack = false) {
      compta: pageCompta, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
      parametres: pageParametres, fournisseursComptes: pageFournisseursComptes,
      espaceFournisseur: pageEspaceFournisseur, proprietaires: pageProprietaires,
+     abonnements: pageAbonnements,
      proprietaireBoutiques: pageProprietaireBoutiques, proprietaireCollabs: pageProprietaireCollabs
    }[page] || pageDashboard)();
 }
@@ -1761,6 +1780,79 @@ window.resetPropPass = async (id) => {
   catch (e) { toast(e.message, true); }
 };
 
+/* ───────────── Abonnements & paiements (super-admin) ───────────── */
+async function pageAbonnements() {
+  $('pageTitle').textContent = 'Abonnements & paiements';
+  const c = $('content');
+  c.innerHTML = `<div id="aboStats"></div>
+    <div class="panel"><h3>Abonnements des propriétaires</h3>
+      <div class="hint">Enregistrez un paiement pour prolonger l'échéance. Le montant mensuel sert de référence.</div>
+      <div id="aboTable"><div class="hint">Chargement…</div></div></div>`;
+  loadAboStats(); loadAbonnements();
+}
+async function loadAboStats() {
+  try {
+    const s = await api('/admin/stats');
+    $('aboStats').innerHTML = `<div class="kpis">
+      <div class="kpi"><div class="v">${s.nbProprietaires}</div><div class="l">Propriétaires</div></div>
+      <div class="kpi"><div class="v">${s.nbBoutiques}</div><div class="l">Boutiques</div></div>
+      <div class="kpi"><div class="v" style="color:#16a34a">${s.abonnements.actif}</div><div class="l">Abonnements actifs</div></div>
+      <div class="kpi"><div class="v" style="color:#b91c1c">${s.abonnements.expire}</div><div class="l">Expirés</div></div>
+      <div class="kpi"><div class="v">${money(s.revenusMois)}</div><div class="l">Encaissé ce mois</div></div>
+      <div class="kpi"><div class="v">${money(s.revenusTotaux)}</div><div class="l">Encaissé (cumul)</div></div>
+    </div>`;
+  } catch (e) { toast(e.message, true); }
+}
+async function loadAbonnements() {
+  try {
+    const rows = await api('/admin/proprietaires');
+    $('aboTable').innerHTML = rows.length ? `<table>
+      <tr><th>Propriétaire</th><th>Statut</th><th>Échéance</th><th>Montant/mois</th><th>Paiement</th><th></th></tr>
+      ${rows.map(p => { const a = p.abonnement; return `<tr>
+        <td>${esc(p.nom)}</td>
+        <td><span class="tag ${ABO_TAG[a.statut]}">${ABO_LABEL[a.statut]}</span></td>
+        <td>${esc(aboTexte(a))}</td>
+        <td><input type="number" min="0" value="${a.montant}" style="max-width:110px" id="am_${p.id}">
+          <button class="btn sec" onclick="setAboMontant(${p.id})">OK</button></td>
+        <td class="row-actions">
+          <input type="number" min="0" placeholder="Montant" style="max-width:110px" id="pm_${p.id}">
+          <input placeholder="Mois" type="number" min="1" value="1" style="max-width:70px" id="pmo_${p.id}">
+          <input placeholder="Méthode (espèces…)" style="max-width:150px" id="pme_${p.id}">
+          <button class="btn" onclick="ajouterPaiement(${p.id})">+ Paiement</button></td>
+        <td><button class="btn sec" onclick="voirPaiements(${p.id},'${esc(p.nom)}')">Historique</button></td>
+      </tr>`; }).join('')}</table>`
+      : '<div class="hint">Aucun propriétaire. Créez-en un dans « 🏢 Propriétaires ».</div>';
+  } catch (e) { toast(e.message, true); }
+}
+window.setAboMontant = async (id) => {
+  try { await api('/admin/proprietaires/' + id, { method: 'PATCH', body: JSON.stringify({ abonnementMontant: Number($('am_' + id).value) }) });
+    toast('Montant mensuel mis à jour'); }
+  catch (e) { toast(e.message, true); }
+};
+window.ajouterPaiement = async (id) => {
+  const montant = Number($('pm_' + id).value) || 0;
+  const mois = Number($('pmo_' + id).value) || 1;
+  const methode = $('pme_' + id).value;
+  if (montant <= 0) return toast('Montant invalide', true);
+  try {
+    const r = await api('/admin/proprietaires/' + id + '/paiements', { method: 'POST', body: JSON.stringify({ montant, mois, methode }) });
+    toast('Paiement enregistré — échéance : ' + r.echeance);
+    loadAboStats(); loadAbonnements();
+  } catch (e) { toast(e.message, true); }
+};
+window.voirPaiements = async (id, nom) => {
+  try {
+    const rows = await api('/admin/proprietaires/' + id + '/paiements');
+    const lignes = rows.length ? rows.map(p => `<tr><td>${esc((p.created_at || '').slice(0, 16))}</td>
+      <td>${money(p.montant)}</td><td>${esc(p.methode || '')}</td><td>${p.mois} mois</td>
+      <td>${esc(p.periode_fin || '')}</td><td>${esc(p.valide_par || '')}</td></tr>`).join('')
+      : '<tr><td colspan="6">Aucun paiement.</td></tr>';
+    showModal(`Paiements — ${esc(nom)}`, `<table>
+      <tr><th>Date</th><th>Montant</th><th>Méthode</th><th>Durée</th><th>Nouvelle échéance</th><th>Validé par</th></tr>
+      ${lignes}</table>`);
+  } catch (e) { toast(e.message, true); }
+};
+
 /* ───────────── Espace central propriétaire (hub) ───────────── */
 let PROP = { boutiques: [] };
 async function pageProprietaireBoutiques() {
@@ -1772,7 +1864,15 @@ async function pageProprietaireBoutiques() {
     const ds = await api('/proprietaire/boutiques');
     PROP.boutiques = ds;
     const peutCreer = me.quotaDisponible > 0;
+    const a = me.abonnement || {};
+    const aboColor = a.statut === 'actif' ? '#16a34a' : a.statut === 'essai' ? '#92400e' : '#b91c1c';
+    const aboBanner = `<div class="panel" style="border-left:4px solid ${aboColor}">
+      <b>Abonnement :</b> <span class="tag ${ABO_TAG[a.statut] || 'off'}">${ABO_LABEL[a.statut] || '—'}</span>
+      &nbsp;${esc(aboTexte(a))}${a.montant ? ` · ${money(a.montant)}/mois` : ''}
+      ${a.statut === 'expire' || a.statut === 'suspendu' ? '<div class="hint">Régularisez auprès du super-admin pour éviter le blocage de vos boutiques.</div>' : ''}
+    </div>`;
     c.innerHTML = `
+      ${aboBanner}
       <div class="kpis">
         <div class="kpi"><div class="v">${me.nbBoutiques}/${me.quota_boutiques}</div><div class="l">Boutiques (quota)</div></div>
         <div class="kpi"><div class="v">${me.quotaDisponible}</div><div class="l">Créations restantes</div></div>
