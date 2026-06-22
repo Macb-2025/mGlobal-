@@ -379,6 +379,13 @@ addColumn('distributeurs', 'gele', 'gele INTEGER NOT NULL DEFAULT 0');
 addColumn('proprietaires', 'abonnement_montant', 'abonnement_montant REAL NOT NULL DEFAULT 0');
 addColumn('proprietaires', 'abonnement_echeance', 'abonnement_echeance TEXT'); // date AAAA-MM-JJ
 addColumn('proprietaires', 'abonnement_statut', "abonnement_statut TEXT NOT NULL DEFAULT 'essai'"); // essai|actif|expire|suspendu
+// Passerelle de paiement (Module 8) : un paiement peut être manuel (super-admin)
+// ou automatique (en ligne via fournisseur), avec un cycle de vie en_attente→valide/echoue.
+addColumn('paiements', 'type', "type TEXT NOT NULL DEFAULT 'manuel'");        // manuel|auto
+addColumn('paiements', 'statut', "statut TEXT NOT NULL DEFAULT 'valide'");    // en_attente|valide|echoue
+addColumn('paiements', 'provider', 'provider TEXT');                          // simulation|wave|paydunya|cinetpay…
+addColumn('paiements', 'provider_ref', 'provider_ref TEXT');                  // identifiant de transaction côté fournisseur
+addColumn('paiements', 'token', 'token TEXT');                               // jeton interne de réconciliation (checkout)
 // Hiérarchie à 3 niveaux : rattachement d'une boutique à son propriétaire + nature.
 addColumn('distributeurs', 'proprietaire_id', 'proprietaire_id INTEGER REFERENCES proprietaires(id) ON DELETE CASCADE');
 addColumn('distributeurs', 'nature', "nature TEXT NOT NULL DEFAULT 'autre'"); // habillement|epicerie|depot|autre

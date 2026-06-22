@@ -223,3 +223,9 @@ table.fa-lignes td.r { text-align:right; font-weight:700; color:var(--accent); w
 .abo-block p { color: #334155; margin: 6px 0; line-height: 1.5; }
 .abo-block .lock { font-size: 44px; }
 .abo-block .btn { margin-top: 14px; }
+
+/* Bouton compact dans les bandeaux d'abonnement (Module 8) */
+.btn-mini { margin-left: 8px; padding: 3px 10px; font-size: 12px; font-weight: 700;
+  border: none; border-radius: 999px; cursor: pointer; background: #0f3d6e; color: #fff; }
+.btn-mini:hover { filter: brightness(1.08); }
+.abo-block .btn.sec { margin-top: 8px; background: #e2e8f0; color: #334155; }

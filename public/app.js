@@ -178,7 +178,8 @@ function menuFor(role) {
       { id: 'proprietaireDashboard', label: '📊 Tableau de bord' },
       { id: 'proprietaireBoutiques', label: '🏬 Mes boutiques' },
       { id: 'proprietaireTransferts', label: '🔄 Transferts de stock' },
-      { id: 'proprietaireCollabs', label: '👥 Collaborateurs (RH)' }
+      { id: 'proprietaireCollabs', label: '👥 Collaborateurs (RH)' },
+      { id: 'proprietaireAbonnement', label: '💳 Abonnement & paiement' }
     ];
   }
   // Fournisseur : son espace dédié (solde, livraisons au distributeur, historique).
@@ -275,18 +276,22 @@ function applyAbonnement(a) {
       <div class="lock">🔒</div>
       <h2>Espace bloqué — abonnement échu</h2>
       <p>L'abonnement mGlobal Business de ce réseau est arrivé à expiration${ech}.</p>
-      <p>${proprio ? 'Veuillez régulariser votre abonnement auprès du super-administrateur pour rétablir l\'accès.' : 'Contactez le propriétaire du réseau ou le super-administrateur pour rétablir l\'accès.'}</p>
-      <button class="btn" onclick="logout()">Se déconnecter</button>
+      <p>${proprio ? 'Réglez votre abonnement en ligne pour rétablir l\'accès immédiatement, ou contactez le super-administrateur.' : 'Contactez le propriétaire du réseau ou le super-administrateur pour rétablir l\'accès.'}</p>
+      ${proprio ? '<button class="btn" onclick="payerEnLigne(1)">💳 Payer en ligne</button>' : ''}
+      <button class="btn sec" onclick="logout()">Se déconnecter</button>
     </div>`;
     return;
   }
   bar.classList.remove('hidden');
+  const proprio = S.user.role === 'proprietaire';
   if (a.mode === 'lecture_seule') {
     bar.className = 'abo-bar lvl-ro';
-    bar.textContent = `🔒 Abonnement échu${ech} : espace en LECTURE SEULE. Réglez l'abonnement pour réactiver les saisies.`;
+    bar.innerHTML = `🔒 Abonnement échu${ech} : espace en LECTURE SEULE. Réglez l'abonnement pour réactiver les saisies.`
+      + (proprio ? ' <button class="btn-mini" onclick="go(\'proprietaireAbonnement\')">Payer en ligne</button>' : '');
   } else { // alerte
     bar.className = 'abo-bar ' + (a.alerteUrgente ? 'lvl-urgent' : 'lvl-alerte');
-    bar.textContent = `⚠ Abonnement à renouveler : expire dans ${a.joursRestants} jour(s)${ech}.`;
+    bar.innerHTML = `⚠ Abonnement à renouveler : expire dans ${a.joursRestants} jour(s)${ech}.`
+      + (proprio ? ' <button class="btn-mini" onclick="go(\'proprietaireAbonnement\')">Payer en ligne</button>' : '');
   }
 }
 
@@ -306,7 +311,8 @@ function go(page, fromBack = false) {
      espaceFournisseur: pageEspaceFournisseur, proprietaires: pageProprietaires,
      abonnements: pageAbonnements,
      proprietaireDashboard: pageProprietaireDashboard, proprietaireTransferts: pageProprietaireTransferts,
-     proprietaireBoutiques: pageProprietaireBoutiques, proprietaireCollabs: pageProprietaireCollabs
+     proprietaireBoutiques: pageProprietaireBoutiques, proprietaireCollabs: pageProprietaireCollabs,
+     proprietaireAbonnement: pageProprietaireAbonnement
    }[page] || pageDashboard)();
 }
 function goBack() {
@@ -2295,6 +2301,79 @@ window.delCollab = async (id) => {
   try { await api('/proprietaire/collaborateurs/' + id, { method: 'DELETE' }); loadCollabs(); }
   catch (e) { toast(e.message, true); }
 };
+
+/* ───────────── Abonnement & paiement (propriétaire) ───────────── */
+async function pageProprietaireAbonnement() {
+  $('pageTitle').textContent = 'Abonnement & paiement';
+  const c = $('content');
+  c.innerHTML = '<div class="panel"><div class="hint">Chargement…</div></div>';
+  try {
+    const [info, hist] = await Promise.all([api('/paiements/abonnement'), api('/paiements/')]);
+    const a = info.abonnement;
+    const mm = info.montantMensuel || 0;
+    const stTag = `<span class="tag ${ABO_TAG[a.statut] || ''}">${ABO_LABEL[a.statut] || a.statut}</span>`;
+    c.innerHTML = `<div class="panel">
+      <h3>Mon abonnement mGlobal Business</h3>
+      <div class="kpis">
+        <div class="kpi"><div class="v">${stTag}</div><div class="l">Statut</div></div>
+        <div class="kpi"><div class="v">${a.echeance || '—'}</div><div class="l">Échéance</div></div>
+        <div class="kpi"><div class="v">${a.joursRestants == null ? '—' : a.joursRestants + ' j'}</div><div class="l">Jours restants</div></div>
+        <div class="kpi"><div class="v">${money(mm)}</div><div class="l">Montant mensuel</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Payer en ligne</h3>
+      <div class="hint">Réglez votre abonnement par paiement en ligne ; votre espace est réactivé automatiquement après confirmation.</div>
+      <div class="filters" style="margin-top:8px">
+        <span><label>Nombre de mois</label><input id="payMois" type="number" min="1" value="1"></span>
+        <span><label>Total à payer</label><input id="payTotal" value="${money(mm)}" disabled></span>
+        <button class="btn" id="payGo">💳 Payer en ligne</button>
+      </div>
+    </div>
+    <div class="panel"><h3>Historique des paiements</h3>${histPaiementsTable(hist)}</div>`;
+    const maj = () => { $('payTotal').value = money((Number($('payMois').value) || 1) * mm); };
+    $('payMois').oninput = maj;
+    $('payGo').onclick = () => payerEnLigne(Number($('payMois').value) || 1);
+  } catch (e) { toast(e.message, true); c.innerHTML = `<div class="panel"><div class="hint">${esc(e.message)}</div></div>`; }
+}
+function histPaiementsTable(hist) {
+  if (!hist || !hist.length) return '<div class="hint">Aucun paiement.</div>';
+  return `<table>
+    <tr><th>Date</th><th>Type</th><th>Méthode</th><th class="r">Montant</th><th class="r">Mois</th><th>Nouvelle échéance</th><th>Statut</th></tr>
+    ${hist.map(p => `<tr>
+      <td>${esc((p.created_at || '').slice(0, 16))}</td>
+      <td>${p.type === 'auto' ? 'En ligne' : 'Manuel'}</td>
+      <td>${esc(p.methode || p.provider || '')}</td>
+      <td class="r">${money(p.montant)}</td><td class="r">${p.mois}</td>
+      <td>${esc(p.periode_fin || '')}</td>
+      <td><span class="tag ${p.statut === 'valide' ? 'on' : p.statut === 'echoue' ? 'off' : ''}">${p.statut}</span></td>
+    </tr>`).join('')}</table>`;
+}
+// Lance le paiement en ligne : ouvre la page de la passerelle puis surveille la
+// confirmation (le webhook réactive l'abonnement côté serveur).
+async function payerEnLigne(mois) {
+  try {
+    const r = await api('/paiements/initier', { method: 'POST', body: JSON.stringify({ mois }) });
+    const win = window.open(r.paymentUrl, 'mglobal_paiement');
+    toast('Page de paiement ouverte…');
+    const debut = Date.now();
+    const timer = setInterval(async () => {
+      let etat;
+      try { etat = await api('/paiements/etat/' + r.token); } catch { return; }
+      if (etat.statut === 'valide') {
+        clearInterval(timer);
+        try { if (win && !win.closed) win.close(); } catch {}
+        toast('Paiement confirmé — abonnement réactivé');
+        try { S.user = await api('/auth/me'); } catch {}
+        applyAbonnement(S.user && S.user.abonnement);
+        go('proprietaireAbonnement');
+      } else if (etat.statut === 'echoue' || Date.now() - debut > 300000) {
+        clearInterval(timer);
+        if (etat.statut === 'echoue') toast('Paiement échoué ou annulé', true);
+      }
+    }, 3000);
+  } catch (e) { toast(e.message, true); }
+}
 
 /* ───────────── Démarrage ───────────── */
 (async function init() {
