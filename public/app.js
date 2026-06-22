@@ -89,7 +89,9 @@ function menuFor(role) {
   // Propriétaire : espace central (hub) — ses boutiques + RH centralisée.
   if (role === 'proprietaire') {
     return [
+      { id: 'proprietaireDashboard', label: '📊 Tableau de bord' },
       { id: 'proprietaireBoutiques', label: '🏬 Mes boutiques' },
+      { id: 'proprietaireTransferts', label: '🔄 Transferts de stock' },
       { id: 'proprietaireCollabs', label: '👥 Collaborateurs (RH)' }
     ];
   }
@@ -163,7 +165,7 @@ function enterApp() {
   S.history = [];
   const back = $('btnBack'); if (back) back.onclick = goBack;
   const accueil = u.role === 'superadmin' ? 'admin'
-    : u.role === 'proprietaire' ? 'proprietaireBoutiques'
+    : u.role === 'proprietaire' ? 'proprietaireDashboard'
     : u.role === 'fournisseur' ? 'espaceFournisseur' : 'dashboard';
   go(accueil);
   connectWS();
@@ -184,6 +186,7 @@ function go(page, fromBack = false) {
      parametres: pageParametres, fournisseursComptes: pageFournisseursComptes,
      espaceFournisseur: pageEspaceFournisseur, proprietaires: pageProprietaires,
      abonnements: pageAbonnements,
+     proprietaireDashboard: pageProprietaireDashboard, proprietaireTransferts: pageProprietaireTransferts,
      proprietaireBoutiques: pageProprietaireBoutiques, proprietaireCollabs: pageProprietaireCollabs
    }[page] || pageDashboard)();
 }
@@ -1855,6 +1858,107 @@ window.voirPaiements = async (id, nom) => {
 
 /* ───────────── Espace central propriétaire (hub) ───────────── */
 let PROP = { boutiques: [] };
+
+async function pageProprietaireDashboard() {
+  $('pageTitle').textContent = 'Tableau de bord du réseau';
+  const c = $('content');
+  c.innerHTML = '<div class="panel"><div class="hint">Chargement…</div></div>';
+  try {
+    const d = await api('/proprietaire/dashboard');
+    const t = d.totaux;
+    c.innerHTML = `
+      <div class="kpis">
+        <div class="kpi"><div class="v">${t.nbBoutiques}</div><div class="l">Boutiques</div></div>
+        <div class="kpi"><div class="v">${money(t.caMois)}</div><div class="l">CA ce mois</div></div>
+        <div class="kpi"><div class="v">${money(t.ca)}</div><div class="l">CA cumulé</div></div>
+        <div class="kpi"><div class="v">${money(t.encaisse)}</div><div class="l">Encaissé</div></div>
+        <div class="kpi"><div class="v" style="color:#b91c1c">${money(t.creances)}</div><div class="l">Créances clients</div></div>
+        <div class="kpi"><div class="v">${money(t.valeurStock)}</div><div class="l">Valeur du stock</div></div>
+      </div>
+      <div class="panel"><h3>Performance par boutique</h3>
+        ${d.parBoutique.length ? `<table>
+          <tr><th>Boutique</th><th>Nature</th><th class="r">CA mois</th><th class="r">CA cumulé</th><th class="r">Encaissé</th><th class="r">Créances</th><th class="r">Stock (valeur)</th><th class="r">Alertes</th></tr>
+          ${d.parBoutique.map(b => `<tr>
+            <td>${esc(b.nom)} ${b.gele ? '<span class="tag off">suspendue</span>' : ''}</td>
+            <td>${esc(NATURE_LABEL[b.nature] || b.nature)}</td>
+            <td class="r">${money(b.caMois)}</td><td class="r">${money(b.ca)}</td>
+            <td class="r">${money(b.encaisse)}</td><td class="r">${money(b.creances)}</td>
+            <td class="r">${money(b.valeurStock)}</td>
+            <td class="r">${b.alertesStock ? `<span class="tag off">${b.alertesStock}</span>` : '0'}</td>
+          </tr>`).join('')}</table>`
+          : '<div class="hint">Aucune boutique. Créez-en une dans « 🏬 Mes boutiques ».</div>'}
+      </div>`;
+  } catch (e) { toast(e.message, true); c.innerHTML = `<div class="panel"><div class="hint">${esc(e.message)}</div></div>`; }
+}
+
+async function pageProprietaireTransferts() {
+  $('pageTitle').textContent = 'Transferts de stock';
+  const c = $('content');
+  c.innerHTML = '<div class="panel"><div class="hint">Chargement…</div></div>';
+  try {
+    const ds = await api('/proprietaire/boutiques');
+    PROP.boutiques = ds;
+    if (ds.length < 2) {
+      c.innerHTML = '<div class="panel"><div class="hint">Il faut au moins 2 boutiques pour effectuer un transfert.</div></div>';
+      return;
+    }
+    const opts = ds.map(d => `<option value="${d.id}">${esc(d.nom)}</option>`).join('');
+    c.innerHTML = `<div class="panel"><h3>Transférer un article entre boutiques</h3>
+      <div class="hint">L'article est déduit du stock source et ajouté au stock de la boutique de destination (créé s'il n'existe pas).</div>
+      <div class="filters" style="margin-top:10px">
+        <span><label>Boutique source</label><select id="trSrc">${opts}</select></span>
+        <span><label>Article</label><select id="trProd"><option>—</option></select></span>
+        <span><label>Quantité</label><input id="trQte" type="number" step="0.001" min="0" value="0"></span>
+        <span><label>Boutique destination</label><select id="trDst">${opts}</select></span>
+        <span><label>Note</label><input id="trNote" placeholder="Optionnel"></span>
+        <button class="btn" id="trGo">🔄 Transférer</button>
+      </div>
+      <div class="hint" id="trStock" style="margin-top:8px"></div></div>
+      <div class="panel"><h3>Historique des transferts</h3><div id="trTable"></div></div>`;
+    if (ds[1]) $('trDst').value = ds[1].id;
+    $('trSrc').onchange = loadTransfertProduits;
+    $('trProd').onchange = majTrStock;
+    $('trGo').onclick = faireTransfert;
+    loadTransfertProduits();
+    loadTransferts();
+  } catch (e) { toast(e.message, true); }
+}
+let TR_PRODUITS = [];
+async function loadTransfertProduits() {
+  try {
+    TR_PRODUITS = await api('/proprietaire/produits?distributeurId=' + $('trSrc').value);
+    $('trProd').innerHTML = TR_PRODUITS.length
+      ? TR_PRODUITS.map(p => `<option value="${p.id}">${esc(p.nom)} — stock ${money(p.stock_actuel)} ${esc(p.unite || '')}</option>`).join('')
+      : '<option value="">— aucun article —</option>';
+    majTrStock();
+  } catch (e) { toast(e.message, true); }
+}
+function majTrStock() {
+  const p = TR_PRODUITS.find(x => String(x.id) === $('trProd').value);
+  $('trStock').textContent = p ? `Stock disponible : ${money(p.stock_actuel)} ${p.unite || ''}` : '';
+}
+async function faireTransfert() {
+  const body = { sourceId: Number($('trSrc').value), destId: Number($('trDst').value),
+    produitId: Number($('trProd').value), quantite: Number($('trQte').value), note: $('trNote').value };
+  if (!body.produitId) return toast('Sélectionnez un article', true);
+  if (body.sourceId === body.destId) return toast('Choisissez deux boutiques différentes', true);
+  try {
+    await api('/proprietaire/transferts', { method: 'POST', body: JSON.stringify(body) });
+    toast('Transfert effectué'); $('trQte').value = 0; $('trNote').value = '';
+    loadTransfertProduits(); loadTransferts();
+  } catch (e) { toast(e.message, true); }
+}
+async function loadTransferts() {
+  try {
+    const rows = await api('/proprietaire/transferts');
+    $('trTable').innerHTML = rows.length ? `<table>
+      <tr><th>Date</th><th>Article</th><th class="r">Quantité</th><th>Source</th><th>Destination</th><th>Par</th></tr>
+      ${rows.map(t => `<tr><td>${esc((t.created_at || '').slice(0, 16))}</td>
+        <td>${esc(t.produit_nom)}</td><td class="r">${money(t.quantite)} ${esc(t.unite || '')}</td>
+        <td>${esc(t.source_nom)}</td><td>${esc(t.dest_nom)}</td><td>${esc(t.par || '')}</td></tr>`).join('')}</table>`
+      : '<div class="hint">Aucun transfert pour l\'instant.</div>';
+  } catch (e) { toast(e.message, true); }
+}
 async function pageProprietaireBoutiques() {
   $('pageTitle').textContent = 'Mes boutiques';
   const c = $('content');
