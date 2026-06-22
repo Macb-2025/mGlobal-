@@ -343,6 +343,25 @@ CREATE TABLE IF NOT EXISTS transferts_stock (
 );
 CREATE INDEX IF NOT EXISTS idx_transf_prop ON transferts_stock(proprietaire_id);
 
+-- Caisse journalière d'une boutique (Module 4) : ouverture (fond de caisse),
+-- clôture (montant compté) et écart par rapport au théorique (fond + entrées - sorties).
+CREATE TABLE IF NOT EXISTS caisses_jour (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  distributeur_id INTEGER NOT NULL REFERENCES distributeurs(id) ON DELETE CASCADE,
+  jour            TEXT NOT NULL,                 -- AAAA-MM-JJ
+  fond_ouverture  REAL NOT NULL DEFAULT 0,
+  montant_compte  REAL,                          -- compté à la clôture
+  ecart           REAL,                          -- compté - théorique
+  statut          TEXT NOT NULL DEFAULT 'ouverte', -- ouverte|fermee
+  note            TEXT,
+  ouvert_par      TEXT,
+  ferme_par       TEXT,
+  opened_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  closed_at       TEXT,
+  UNIQUE(distributeur_id, jour)
+);
+CREATE INDEX IF NOT EXISTS idx_caisse_dist ON caisses_jour(distributeur_id);
+
 INSERT OR IGNORE INTO live (id, connected, stable, kg, valeur, unite, ts)
 VALUES (1, 0, 0, 0, 0, 't', datetime('now'));
 `);
