@@ -24,14 +24,95 @@ function showModal(titre, html) {
       <div class="modal-body">${html}</div></div></div>`;
 }
 
+/* ───────────── Mode hybride offline (PWA) ─────────────
+   File d'attente (Outbox) en IndexedDB : les écritures faites hors-ligne sont
+   mises en file puis rejouées dès le retour du réseau (Background Sync ou
+   événement « online »). Les lectures s'appuient sur le cache du service worker. */
+const OFFLINE_DB = 'mglobal-offline', OUTBOX = 'outbox';
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const rq = indexedDB.open(OFFLINE_DB, 1);
+    rq.onupgradeneeded = () => { if (!rq.result.objectStoreNames.contains(OUTBOX)) rq.result.createObjectStore(OUTBOX, { keyPath: 'id', autoIncrement: true }); };
+    rq.onsuccess = () => resolve(rq.result);
+    rq.onerror = () => reject(rq.error);
+  });
+}
+function idbReq(store, mode, fn) {
+  return idbOpen().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(store, mode);
+    const r = fn(tx.objectStore(store));
+    tx.oncomplete = () => resolve(r && r.result);
+    tx.onerror = () => reject(tx.error);
+  }));
+}
+const outboxAdd = (item) => idbReq(OUTBOX, 'readwrite', s => s.add({ ...item, ts: Date.now() }));
+const outboxAll = () => idbReq(OUTBOX, 'readonly', s => s.getAll());
+const outboxDel = (id) => idbReq(OUTBOX, 'readwrite', s => s.delete(id));
+async function outboxCount() { try { return (await outboxAll() || []).length; } catch { return 0; } }
+
+function isOnline() { return navigator.onLine !== false; }
+async function updateNetBadge() {
+  const b = $('netBadge'); if (!b) return;
+  const n = await outboxCount();
+  if (!isOnline()) { b.className = 'net-badge net-off'; b.textContent = n ? `● Hors-ligne · ${n} en attente` : '● Hors-ligne'; }
+  else if (n) { b.className = 'net-badge net-sync'; b.textContent = `↻ Synchronisation · ${n}`; }
+  else { b.className = 'net-badge net-on'; b.textContent = '● En ligne'; }
+}
+
+let flushing = false;
+async function flushOutbox() {
+  if (flushing || !isOnline() || !S.token) return;
+  flushing = true;
+  try {
+    const items = (await outboxAll()) || [];
+    for (const it of items) {
+      let res;
+      try {
+        res = await fetch('/api' + it.path, { method: it.method,
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token }, body: it.body });
+      } catch { break; } // toujours hors-ligne : on réessaiera
+      if (res.ok || (res.status >= 400 && res.status < 500)) await outboxDel(it.id); // succès ou rejet définitif
+      else break; // erreur serveur transitoire : on s'arrête
+    }
+  } finally {
+    flushing = false;
+    await updateNetBadge();
+  }
+  if (S.token && (await outboxCount()) === 0 && S.page) { try { go(S.page); } catch {} }
+}
+
+function initOffline() {
+  window.addEventListener('online', () => { updateNetBadge(); flushOutbox(); });
+  window.addEventListener('offline', updateNetBadge);
+  navigator.serviceWorker?.addEventListener?.('message', (e) => { if (e.data === 'flush-outbox') flushOutbox(); });
+  updateNetBadge();
+  flushOutbox();
+  setInterval(() => { if (isOnline()) flushOutbox(); }, 30000);
+}
+
 async function api(path, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase();
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (S.token) headers.Authorization = 'Bearer ' + S.token;
-  const res = await fetch('/api' + path, { ...opts, headers });
+  let res;
+  try {
+    res = await fetch('/api' + path, { ...opts, headers });
+  } catch (netErr) {
+    // Échec réseau : on met les écritures en file d'attente (Outbox) pour rejeu.
+    if (method !== 'GET') {
+      await outboxAdd({ path, method, body: opts.body || null });
+      try { (await navigator.serviceWorker?.ready)?.sync?.register?.('flush-outbox'); } catch {}
+      await updateNetBadge();
+      toast('Hors-ligne : enregistré, synchronisation au retour du réseau');
+      return { ok: true, queued: true };
+    }
+    throw new Error('Hors-ligne : données indisponibles');
+  }
   if (res.status === 401) { logout(); throw new Error('Session expirée'); }
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('json') ? await res.json() : await res.text();
   if (!res.ok) throw new Error((data && data.error) || 'Erreur serveur');
+  if (method !== 'GET') updateNetBadge();
   return data;
 }
 
@@ -2180,8 +2261,9 @@ window.delCollab = async (id) => {
 
 /* ───────────── Démarrage ───────────── */
 (async function init() {
+  initOffline();
   if (S.token) {
     try { S.user = await api('/auth/me'); enterApp(); }
-    catch { logout(); }
+    catch (e) { if (!String(e.message).includes('Hors-ligne')) logout(); }
   }
 })();
