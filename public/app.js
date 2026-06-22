@@ -120,16 +120,17 @@ function menuFor(role) {
     relicat:      { id: 'relicat', label: '💳 Relicat / Créances' },
     recherche:    { id: 'recherche', label: '🔎 Recherche' },
     compta:       { id: 'compta', label: '💰 Comptabilité' },
+    caisse:       { id: 'caisse', label: '🧮 Caisse du jour' },
     rapports:     { id: 'rapports', label: '📈 Rapports' }
   };
   // Comptable : tout le cycle commercial & comptable (pas d'admin utilisateurs).
   if (role === 'comptable') {
     return [M.dashboard, M.suivi, M.clients, M.fournisseurs, M.stock, M.gros,
-      M.facturation, M.relicat, M.recherche, M.compta, M.rapports];
+      M.facturation, M.relicat, M.recherche, M.compta, M.caisse, M.rapports];
   }
   // Vendeur : vente de terrain — pas d'accès à la comptabilité globale.
   if (role === 'vendeur') {
-    return [M.dashboard, M.suivi, M.bons, M.clients, M.facturation, M.relicat, M.recherche];
+    return [M.dashboard, M.suivi, M.bons, M.clients, M.facturation, M.relicat, M.caisse, M.recherche];
   }
   // Stockiste : gestion des marchandises (stock, ventes en gros, fournisseurs).
   if (role === 'stockiste') {
@@ -138,11 +139,11 @@ function menuFor(role) {
   // Assistante : saisie opérationnelle (bons, clients, fournisseurs, stock, facturation).
   if (role === 'assistante') {
     return [M.dashboard, M.suivi, M.bons, M.clients, M.fournisseurs, M.stock, M.gros,
-      M.facturation, M.relicat, M.recherche];
+      M.facturation, M.relicat, M.caisse, M.recherche];
   }
   // Admin (et opérateur hérité) : accès complet.
   const base = [M.dashboard, M.suivi, M.bons, M.clients, M.fournisseurs, M.stock, M.gros,
-    M.facturation, M.relicat, M.recherche, M.compta, M.rapports];
+    M.facturation, M.relicat, M.recherche, M.compta, M.caisse, M.rapports];
   if (role === 'admin') base.push(
     { id: 'parametres', label: '🏢 Paramètres facturation' },
     { id: 'users', label: '🔑 Utilisateurs & rôles' });
@@ -182,7 +183,7 @@ function go(page, fromBack = false) {
   ({ dashboard: pageDashboard, suivi: pageSuivi, bons: pageBons, clients: pageClients,
      fournisseurs: pageFournisseurs, stock: pageStock, gros: pageGros,
      facturation: pageFacturation, relicat: pageRelicat, recherche: pageRecherche,
-     compta: pageCompta, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
+     compta: pageCompta, caisse: pageCaisse, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
      parametres: pageParametres, fournisseursComptes: pageFournisseursComptes,
      espaceFournisseur: pageEspaceFournisseur, proprietaires: pageProprietaires,
      abonnements: pageAbonnements,
@@ -1370,6 +1371,88 @@ async function loadCompta() {
 }
 
 /* ───────────── Rapports ───────────── */
+async function pageCaisse() {
+  $('pageTitle').textContent = 'Caisse du jour';
+  const c = $('content');
+  c.innerHTML = '<div class="panel"><div class="hint">Chargement…</div></div>';
+  await renderCaisse();
+}
+async function renderCaisse() {
+  const c = $('content');
+  try {
+    const d = await api('/caisse/jour');
+    const caisse = d.caisse;
+    const dispo = round2(d.theorique);
+    let bloc;
+    if (!caisse) {
+      bloc = `<div class="panel"><h3>Ouvrir la caisse — ${esc(d.jour)}</h3>
+        <div class="hint">Saisissez le fond de caisse (espèces en début de journée).</div>
+        <div class="filters" style="margin-top:8px">
+          <span><label>Fond de caisse</label><input id="caFond" type="number" min="0" value="0"></span>
+          <button class="btn" id="caOpen">Ouvrir la caisse</button>
+        </div></div>`;
+    } else if (caisse.statut === 'ouverte') {
+      bloc = `<div class="panel"><h3>Caisse ouverte — ${esc(d.jour)}</h3>
+        <div class="kpis">
+          <div class="kpi"><div class="v">${money(caisse.fond_ouverture)}</div><div class="l">Fond d'ouverture</div></div>
+          <div class="kpi"><div class="v" style="color:#16a34a">${money(d.entrees)}</div><div class="l">Entrées du jour</div></div>
+          <div class="kpi"><div class="v" style="color:#b91c1c">${money(d.sorties)}</div><div class="l">Sorties du jour</div></div>
+          <div class="kpi"><div class="v">${money(dispo)}</div><div class="l">Théorique en caisse</div></div>
+        </div>
+        <h3 style="margin-top:14px">Clôturer la caisse</h3>
+        <div class="hint">Comptez les espèces réelles ; l'écart avec le théorique sera enregistré.</div>
+        <div class="filters" style="margin-top:8px">
+          <span><label>Montant compté</label><input id="caCompte" type="number" min="0" value="${dispo}"></span>
+          <span><label>Note</label><input id="caNote" placeholder="Optionnel"></span>
+          <button class="btn" id="caClose">Clôturer</button>
+        </div>
+        <div class="hint" id="caEcart" style="margin-top:6px"></div></div>`;
+    } else {
+      const ec = caisse.ecart || 0;
+      bloc = `<div class="panel"><h3>Caisse clôturée — ${esc(d.jour)}</h3>
+        <div class="kpis">
+          <div class="kpi"><div class="v">${money(caisse.fond_ouverture)}</div><div class="l">Fond d'ouverture</div></div>
+          <div class="kpi"><div class="v">${money(dispo)}</div><div class="l">Théorique</div></div>
+          <div class="kpi"><div class="v">${money(caisse.montant_compte)}</div><div class="l">Compté</div></div>
+          <div class="kpi"><div class="v" style="color:${ec === 0 ? '#16a34a' : '#b91c1c'}">${money(ec)}</div><div class="l">Écart</div></div>
+        </div>
+        ${caisse.note ? `<div class="hint">Note : ${esc(caisse.note)}</div>` : ''}
+        <div class="hint">Clôturée par ${esc(caisse.ferme_par || '')} le ${esc((caisse.closed_at || '').slice(0, 16))}.</div></div>`;
+    }
+    c.innerHTML = bloc + '<div class="panel"><h3>Historique des caisses</h3><div id="caHist"></div></div>';
+    const open = $('caOpen'); if (open) open.onclick = ouvrirCaisse;
+    const close = $('caClose'); if (close) {
+      const maj = () => { const v = Number($('caCompte').value) || 0; $('caEcart').textContent = 'Écart : ' + money(round2(v - dispo)); };
+      $('caCompte').oninput = maj; maj();
+      close.onclick = () => fermerCaisse(dispo);
+    }
+    loadCaisseHist();
+  } catch (e) { toast(e.message, true); c.innerHTML = `<div class="panel"><div class="hint">${esc(e.message)}</div></div>`; }
+}
+async function ouvrirCaisse() {
+  try { await api('/caisse/ouvrir', { method: 'POST', body: JSON.stringify({ fondOuverture: Number($('caFond').value) || 0 }) });
+    toast('Caisse ouverte'); renderCaisse(); }
+  catch (e) { toast(e.message, true); }
+}
+async function fermerCaisse() {
+  try {
+    const r = await api('/caisse/fermer', { method: 'POST', body: JSON.stringify({ montantCompte: Number($('caCompte').value) || 0, note: $('caNote').value }) });
+    toast('Caisse clôturée — écart ' + money(r.ecart)); renderCaisse();
+  } catch (e) { toast(e.message, true); }
+}
+async function loadCaisseHist() {
+  try {
+    const rows = await api('/caisse/historique');
+    $('caHist').innerHTML = rows.length ? `<table>
+      <tr><th>Jour</th><th>Statut</th><th class="r">Fond</th><th class="r">Compté</th><th class="r">Écart</th><th>Par</th></tr>
+      ${rows.map(x => `<tr><td>${esc(x.jour)}</td>
+        <td><span class="tag ${x.statut === 'fermee' ? 'on' : 'off'}">${x.statut}</span></td>
+        <td class="r">${money(x.fond_ouverture)}</td><td class="r">${x.montant_compte != null ? money(x.montant_compte) : '—'}</td>
+        <td class="r">${x.ecart != null ? money(x.ecart) : '—'}</td><td>${esc(x.ferme_par || x.ouvert_par || '')}</td></tr>`).join('')}</table>`
+      : '<div class="hint">Aucune caisse enregistrée.</div>';
+  } catch (e) { toast(e.message, true); }
+}
+
 async function pageRapports() {
   $('pageTitle').textContent = 'Rapports';
   const c = $('content');

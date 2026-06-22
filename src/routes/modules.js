@@ -524,6 +524,52 @@ r.post('/comptabilite', (req, res) => {
   res.json({ ok: true, id: info.lastInsertRowid });
 });
 
+// ── Caisse journalière (Module 4) ──
+// Théorique = fond d'ouverture + entrées - sorties de la journée (journal de caisse).
+function caisseTheorique(distId, jour, fond) {
+  const agg = db.prepare(`SELECT
+      COALESCE(SUM(CASE WHEN type='ENTREE' THEN montant END),0) AS e,
+      COALESCE(SUM(CASE WHEN type='SORTIE' THEN montant END),0) AS s
+    FROM comptabilite WHERE distributeur_id = ? AND substr(date,1,10) = ?`).get(distId, jour);
+  return { entrees: round2(agg.e), sorties: round2(agg.s), theorique: round2(num(fond) + agg.e - agg.s) };
+}
+
+r.get('/caisse/jour', (req, res) => {
+  const jour = (req.query.date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+  const caisse = db.prepare(`SELECT * FROM caisses_jour WHERE distributeur_id = ? AND jour = ?`).get(did(req), jour);
+  const t = caisseTheorique(did(req), jour, caisse ? caisse.fond_ouverture : 0);
+  res.json({ jour, caisse: caisse || null, ...t });
+});
+
+r.post('/caisse/ouvrir', requireRole('admin', 'comptable', 'vendeur', 'superviseur', 'assistante'), (req, res) => {
+  const jour = new Date().toISOString().slice(0, 10);
+  const existe = db.prepare(`SELECT * FROM caisses_jour WHERE distributeur_id = ? AND jour = ?`).get(did(req), jour);
+  if (existe) return res.status(409).json({ error: 'La caisse du jour est déjà ouverte' });
+  const fond = num((req.body || {}).fondOuverture);
+  if (fond < 0) return res.status(400).json({ error: 'Fond de caisse invalide' });
+  db.prepare(`INSERT INTO caisses_jour (distributeur_id, jour, fond_ouverture, statut, ouvert_par)
+    VALUES (?,?,?, 'ouverte', ?)`).run(did(req), jour, fond, req.user.username);
+  res.json({ ok: true });
+});
+
+r.post('/caisse/fermer', requireRole('admin', 'comptable', 'vendeur', 'superviseur', 'assistante'), (req, res) => {
+  const jour = new Date().toISOString().slice(0, 10);
+  const caisse = db.prepare(`SELECT * FROM caisses_jour WHERE distributeur_id = ? AND jour = ?`).get(did(req), jour);
+  if (!caisse) return res.status(404).json({ error: 'Aucune caisse ouverte aujourd\'hui' });
+  if (caisse.statut === 'fermee') return res.status(409).json({ error: 'La caisse est déjà clôturée' });
+  const compte = num((req.body || {}).montantCompte);
+  const note = (req.body || {}).note || '';
+  const t = caisseTheorique(did(req), jour, caisse.fond_ouverture);
+  const ecart = round2(compte - t.theorique);
+  db.prepare(`UPDATE caisses_jour SET montant_compte = ?, ecart = ?, statut = 'fermee', note = ?,
+    ferme_par = ?, closed_at = datetime('now') WHERE id = ?`).run(compte, ecart, note, req.user.username, caisse.id);
+  res.json({ ok: true, theorique: t.theorique, ecart });
+});
+
+r.get('/caisse/historique', (req, res) => {
+  res.json(db.prepare(`SELECT * FROM caisses_jour WHERE distributeur_id = ? ORDER BY jour DESC LIMIT 60`).all(did(req)));
+});
+
 // ══════════════════════════════════════════
 // 6. VENTES EN GROS & ENLÈVEMENTS (relicat marchandise)
 // ══════════════════════════════════════════
