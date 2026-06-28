@@ -61,7 +61,8 @@ function menuFor(role) {
     return [
       { id: 'admin', label: '⚙ Administration' },
       { id: 'users', label: '🔑 Création de comptes' },
-      { id: 'fournisseursComptes', label: '🚚 Espaces fournisseurs' }
+      { id: 'fournisseursComptes', label: '🚚 Espaces fournisseurs' },
+      { id: 'licences', label: '🛡 Licences & OTA' }
     ];
   }
   // Fournisseur : son espace dédié (solde, livraisons au distributeur, historique).
@@ -142,7 +143,7 @@ function go(page, fromBack = false) {
      facturation: pageFacturation, relicat: pageRelicat, recherche: pageRecherche,
      compta: pageCompta, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
      parametres: pageParametres, fournisseursComptes: pageFournisseursComptes,
-     espaceFournisseur: pageEspaceFournisseur }[page] || pageDashboard)();
+     espaceFournisseur: pageEspaceFournisseur, licences: pageLicences }[page] || pageDashboard)();
 }
 function goBack() {
   const prev = S.history.pop();
@@ -1057,11 +1058,20 @@ async function loadFactures() {
         <td>${money(f.montant_paye)}</td>
         <td class="${f.relicat > 0 ? 'neg' : 'pos'}">${money(f.relicat)}</td>
         <td><span class="badge ${s[1]}">${s[0]}</span></td>
-        <td class="row-actions"><button class="btn sec" onclick="imprimerFacture(${f.id})">Imprimer</button></td>
+        <td class="row-actions">
+          <button class="btn sec" onclick="imprimerFacture(${f.id})">Imprimer</button>
+          ${f.statut !== 'annulee' && S.user?.role === 'admin' ? `<button class="btn danger" onclick="annulerFacture(${f.id},'${esc(f.numero)}')">Annuler</button>` : ''}
+        </td>
       </tr>`; }).join('')}</table>` : '<div class="hint">Aucune facture émise.</div>';
   } catch (e) { toast(e.message, true); }
 }
 window.imprimerFacture = (id) => window.open(`/api/factures/${id}/imprimer?token=${encodeURIComponent(S.token)}`, '_blank');
+window.annulerFacture = async (id, numero) => {
+  if (!confirm(`Annuler la facture ${numero} ? Les écritures comptables seront inversées.`)) return;
+  try { await api('/factures/' + id + '/annuler', { method: 'PATCH' });
+    toast('Facture annulée'); loadFactures(); }
+  catch (e) { toast(e.message, true); }
+};
 window.imprimerBon = (id) => window.open(`/api/bons-commande/${id}/imprimer?token=${encodeURIComponent(S.token)}`, '_blank');
 
 /* ───────────── Relicat / Créances ───────────── */
@@ -1434,6 +1444,13 @@ async function pageAdmin() {
       <div class="filters"><input id="dNom" placeholder="Nom du distributeur">
         <button class="btn sec" id="dAdd">Créer l'espace</button></div>
       <div id="dTable"><div class="hint">Chargement…</div></div></div>
+    <div class="panel"><h3>Mot de passe journalier (accès offline)</h3>
+      <div class="hint">Mot de passe temporaire (6 chiffres) permettant l'accès offline au poste pont bascule. Change automatiquement chaque jour.</div>
+      <div class="filters" style="margin-top:10px">
+        <span><label>Espace distributeur</label><select id="dpDistrib"></select></span>
+        <button class="btn sec" id="dpGen">Afficher le mot de passe du jour</button>
+        <span id="dpResult" style="font-size:24px;font-weight:800;color:#0f3d6e;letter-spacing:6px"></span>
+      </div></div>
     <div class="panel"><h3>Mon mot de passe (super-admin)</h3>
       <div class="hint">Modifiez le mot de passe du compte super-admin mGlobal.</div>
       <div class="filters" style="margin-top:10px">
@@ -1443,6 +1460,18 @@ async function pageAdmin() {
         <button class="btn sec" id="pwSave">Modifier</button></div></div>`;
   $('platUrl').textContent = location.origin;
   $('pwSave').onclick = changePassword;
+  // Mot de passe journalier : remplir la liste des distributeurs
+  api('/admin/distributeurs').then(ds => {
+    $('dpDistrib').innerHTML = ds.map(d => `<option value="${d.id}">${esc(d.nom)}</option>`).join('');
+  }).catch(() => {});
+  $('dpGen').onclick = async () => {
+    const did = $('dpDistrib').value;
+    if (!did) return toast('Sélectionnez un distributeur', true);
+    try {
+      const r = await api('/license/admin/daily-password/' + did);
+      $('dpResult').textContent = r.password;
+    } catch (e) { toast(e.message, true); }
+  };
   $('dAdd').onclick = async () => {
     try { await api('/admin/distributeurs', { method: 'POST', body: JSON.stringify({ nom: $('dNom').value }) });
       toast('Espace créé'); $('dNom').value = ''; loadDistribs(); }
@@ -1646,6 +1675,104 @@ async function enregistrerLivraisonEF() {
     pageEspaceFournisseur();
   } catch (e) { toast(e.message, true); }
 }
+
+/* ───────────── Licences & OTA (super-admin) ───────────── */
+async function pageLicences() {
+  $('pageTitle').textContent = 'Licences & Mises à jour OTA';
+  const c = $('content');
+  c.innerHTML = `
+    <div class="panel"><h3>🛡 Licences anti-clonage</h3>
+      <div class="hint">Chaque poste pont bascule est lié à une licence unique. Le hardware_id empêche la copie du logiciel sur un autre ordinateur.</div>
+      <div id="licTable"><div class="hint">Chargement…</div></div></div>
+    <div class="panel"><h3>📦 Mises à jour OTA</h3>
+      <div class="hint">Publiez les nouvelles versions du logiciel pont bascule. Les postes vérifieront automatiquement les mises à jour.</div>
+      <div class="filters" style="margin-top:10px">
+        <input id="otaVer" placeholder="Version (ex: 2.1.0)">
+        <input id="otaUrl" placeholder="URL de téléchargement">
+        <input id="otaLog" placeholder="Notes de version">
+        <label><input type="checkbox" id="otaMand"> Obligatoire</label>
+        <button class="btn sec" id="otaAdd">Publier</button>
+      </div>
+      <div id="otaTable"><div class="hint">Chargement…</div></div></div>`;
+  $('otaAdd').onclick = async () => {
+    try {
+      await api('/license/admin/ota', { method: 'POST', body: JSON.stringify({
+        version: $('otaVer').value, url: $('otaUrl').value,
+        changelog: $('otaLog').value, mandatory: $('otaMand').checked
+      })});
+      toast('Mise à jour publiée'); $('otaVer').value = $('otaUrl').value = $('otaLog').value = '';
+      loadOta();
+    } catch (e) { toast(e.message, true); }
+  };
+  loadLicences(); loadOta();
+}
+async function loadLicences() {
+  try {
+    const lics = await api('/license/admin/all');
+    $('licTable').innerHTML = lics.length ? `<table>
+      <tr><th>Site</th><th>Clé licence</th><th>Statut</th><th>Hardware ID</th><th>Expiration</th><th>Activée le</th><th></th></tr>
+      ${lics.map(l => {
+        const expired = l.expires_at && new Date(l.expires_at) < new Date();
+        const st = l.status === 'REVOKED' ? 'off' : (expired ? 'off' : 'on');
+        const label = l.status === 'REVOKED' ? 'Révoquée' : (expired ? 'Expirée' : 'Active');
+        return `<tr>
+          <td>${esc(l.site_nom)}</td>
+          <td><span class="keybox" style="font-size:11px">${esc(l.license_key)}</span></td>
+          <td><span class="tag ${st}">${label}</span></td>
+          <td style="font-size:11px">${esc(l.hardware_id || '— non activée')}</td>
+          <td>${esc(l.expires_at || 'Illimitée')}</td>
+          <td>${esc((l.activated_at || '').slice(0, 16) || '—')}</td>
+          <td class="row-actions">
+            ${l.status === 'ACTIVE' ? `<button class="btn danger" onclick="licAction(${l.id},'REVOKED')">Révoquer</button>` :
+              `<button class="btn sec" onclick="licAction(${l.id},'ACTIVE')">Réactiver</button>`}
+            ${l.hardware_id ? `<button class="btn sec" onclick="licResetHw(${l.id})">Reset HW</button>` : ''}
+            <button class="btn sec" onclick="licExpire(${l.id})">Prolonger</button>
+          </td></tr>`;
+      }).join('')}</table>`
+      : '<div class="hint">Aucune licence enregistrée.</div>';
+  } catch (e) { toast(e.message, true); }
+}
+window.licAction = async (id, status) => {
+  const label = status === 'REVOKED' ? 'révoquer' : 'réactiver';
+  if (!confirm(`Confirmer : ${label} cette licence ?`)) return;
+  try { await api('/license/admin/' + id, { method: 'PATCH', body: JSON.stringify({ status }) });
+    toast('Licence mise à jour'); loadLicences(); }
+  catch (e) { toast(e.message, true); }
+};
+window.licResetHw = async (id) => {
+  if (!confirm('Réinitialiser le hardware ID ? Le poste devra se réactiver.')) return;
+  try { await api('/license/admin/' + id, { method: 'PATCH', body: JSON.stringify({ reset_hardware: true }) });
+    toast('Hardware ID réinitialisé'); loadLicences(); }
+  catch (e) { toast(e.message, true); }
+};
+window.licExpire = async (id) => {
+  const d = prompt('Nouvelle date d\'expiration (AAAA-MM-JJ) :\n(Laissez vide pour illimitée)');
+  if (d === null) return;
+  try { await api('/license/admin/' + id, { method: 'PATCH', body: JSON.stringify({ expires_at: d || null }) });
+    toast('Expiration mise à jour'); loadLicences(); }
+  catch (e) { toast(e.message, true); }
+};
+async function loadOta() {
+  try {
+    const rows = await api('/license/admin/ota');
+    $('otaTable').innerHTML = rows.length ? `<table>
+      <tr><th>Version</th><th>URL</th><th>Notes</th><th>Obligatoire</th><th>Publiée le</th><th></th></tr>
+      ${rows.map(o => `<tr>
+        <td><b>${esc(o.version)}</b></td>
+        <td style="font-size:11px">${esc(o.url || '—')}</td>
+        <td>${esc(o.changelog || '')}</td>
+        <td>${o.mandatory ? '<span class="tag off">Oui</span>' : 'Non'}</td>
+        <td>${esc((o.created_at || '').slice(0, 16))}</td>
+        <td class="row-actions"><button class="btn danger" onclick="delOta(${o.id})">Suppr.</button></td>
+      </tr>`).join('')}</table>`
+      : '<div class="hint">Aucune mise à jour publiée.</div>';
+  } catch (e) { toast(e.message, true); }
+}
+window.delOta = async (id) => {
+  if (!confirm('Supprimer cette mise à jour ?')) return;
+  try { await api('/license/admin/ota/' + id, { method: 'DELETE' }); loadOta(); }
+  catch (e) { toast(e.message, true); }
+};
 
 /* ───────────── Démarrage ───────────── */
 (async function init() {

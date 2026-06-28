@@ -433,6 +433,45 @@ r.get('/factures/:id/imprimer', (req, res) => {
   res.set('Content-Type', 'text/html; charset=utf-8').send(factureHtml({ ...fa, lignes }, vendeur));
 });
 
+// Annulation d'une facture : inverse les écritures comptables et les soldes client.
+r.patch('/factures/:id/annuler', requireRole('admin'), (req, res) => {
+  const fa = db.prepare(`SELECT * FROM factures WHERE id = ? AND distributeur_id = ?`)
+    .get(req.params.id, did(req));
+  if (!fa) return res.status(404).json({ error: 'Facture introuvable' });
+  if (fa.statut === 'annulee')
+    return res.status(409).json({ error: 'Cette facture est déjà annulée' });
+
+  try {
+    const tx = db.transaction(() => {
+      // Marquer la facture comme annulée
+      db.prepare(`UPDATE factures SET statut = 'annulee' WHERE id = ?`).run(fa.id);
+
+      // Annuler les soldes client (dette et relicat)
+      if (fa.client_id) {
+        if (fa.relicat > 0)
+          db.prepare(`UPDATE clients SET solde_dette = MAX(0, solde_dette - ?) WHERE id = ?`)
+            .run(fa.relicat, fa.client_id);
+        else if (fa.relicat < 0)
+          db.prepare(`UPDATE clients SET solde_relicat = MAX(0, solde_relicat - ?) WHERE id = ?`)
+            .run(Math.abs(fa.relicat), fa.client_id);
+      }
+
+      // Contre-écriture comptable si un encaissement avait été enregistré
+      if (fa.montant_paye > 0) {
+        ecritureCompta(did(req), {
+          type: 'SORTIE', categorie: 'ANNULATION_FACTURE',
+          montant: fa.montant_paye,
+          description: `Annulation facture ${fa.numero}`,
+          clientId: fa.client_id, factureId: fa.id,
+          par: req.user.username
+        });
+      }
+    });
+    tx();
+    res.json({ ok: true, message: `Facture ${fa.numero} annulée` });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // Liste des clients ayant une dette ou un relicat (module gestion du relicat).
 r.get('/relicat', (req, res) => {
   res.json(db.prepare(`SELECT id, immatriculation, nom, telephone, solde_dette, solde_relicat
