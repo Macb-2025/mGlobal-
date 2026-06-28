@@ -126,7 +126,7 @@ function mapEntree(e) {
   };
 }
 
-function esc(x) { return String(x ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+function esc(x) { return String(x ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 function bonHtml(s) {
   return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
@@ -161,10 +161,10 @@ td{padding:7px 4px;border-bottom:1px solid #ddd;font-size:13px;}
     <td class="lbl">Type</td><td class="val">${esc(s.type_transaction)}</td></tr>
 </table>
 <div class="poids">
-<div><div class="lbl">POIDS ENTRÉE</div><div class="big">${(s.poids_entree).toFixed(3)} t</div></div>
-<div class="net"><div class="lbl">POIDS NET CHARGÉ</div><div class="big">${(s.poids_net).toFixed(3)} t</div>
-  <div style="color:#666">= ${(s.montant_total).toFixed(2)}</div></div>
-<div><div class="lbl">POIDS SORTIE</div><div class="big">${(s.poids_sortie).toFixed(3)} t</div></div>
+<div><div class="lbl">POIDS ENTRÉE</div><div class="big">${Number(s.poids_entree ?? 0).toFixed(3)} t</div></div>
+<div class="net"><div class="lbl">POIDS NET CHARGÉ</div><div class="big">${Number(s.poids_net ?? 0).toFixed(3)} t</div>
+  <div style="color:#666">= ${Number(s.montant_total ?? 0).toFixed(2)}</div></div>
+<div><div class="lbl">POIDS SORTIE</div><div class="big">${Number(s.poids_sortie ?? 0).toFixed(3)} t</div></div>
 </div>
 <div class="sign"><div>Signature &amp; Cachet Client</div><div>Signature Chauffeur</div></div>
 <div class="foot">Document généré par la plateforme mGlobal — ${new Date().toLocaleString('fr-FR')}</div>

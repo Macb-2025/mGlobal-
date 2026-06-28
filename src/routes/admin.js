@@ -169,7 +169,12 @@ r.patch('/fournisseurs-comptes/:id', requireRole('superadmin'), (req, res) => {
 r.delete('/fournisseurs-comptes/:id', requireRole('superadmin'), (req, res) => {
   const u = db.prepare(`SELECT * FROM users WHERE id = ? AND role = 'fournisseur'`).get(req.params.id);
   if (!u) return res.status(404).json({ error: 'Compte fournisseur introuvable' });
-  db.prepare(`DELETE FROM users WHERE id = ?`).run(u.id);
+  const tx = db.transaction(() => {
+    db.prepare(`DELETE FROM users WHERE id = ?`).run(u.id);
+    if (u.fournisseur_id)
+      db.prepare(`DELETE FROM fournisseurs WHERE id = ?`).run(u.fournisseur_id);
+  });
+  tx();
   res.json({ ok: true });
 });
 

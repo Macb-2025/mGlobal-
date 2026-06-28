@@ -201,6 +201,8 @@ r.post('/produits/:id/mouvement', (req, res) => {
   if (!sens) return res.status(400).json({ error: 'Sens invalide (IN = entrée, OUT = sortie)' });
   const quantite = num(req.body?.quantite);
   if (quantite <= 0) return res.status(400).json({ error: 'Quantité invalide' });
+  if (sens === 'OUT' && quantite > p.stock_actuel)
+    return res.status(400).json({ error: `Stock insuffisant (disponible : ${p.stock_actuel} ${p.unite})` });
   // Prix par défaut : achat pour une entrée, vente pour une sortie.
   const prix = req.body?.prix_unitaire != null ? num(req.body.prix_unitaire)
     : (sens === 'IN' ? p.prix_achat : (p.prix_vente || p.prix_vente_gros));
