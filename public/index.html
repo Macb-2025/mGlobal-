@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mGlobal Pont Bascule — Plateforme distante</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0f3d6e">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!-- Écran de connexion -->
+  <div id="login">
+    <form class="card" id="loginForm">
+      <div class="brand">
+        <div class="logo">⚖</div>
+        <h1>mGlobal Pont Bascule</h1>
+        <p>Plateforme de gestion distante</p>
+      </div>
+      <label>Identifiant</label>
+      <input id="lUser" autocomplete="username" placeholder="Votre identifiant">
+      <label>Mot de passe</label>
+      <input id="lPass" type="password" autocomplete="current-password" placeholder="••••••••">
+      <button class="btn" type="submit">Se connecter</button>
+      <div class="err" id="lErr"></div>
+      <div class="hint" style="text-align:center;margin-top:16px">
+        Accès sans compte : <a href="/portail.html">Espace client</a>
+      </div>
+    </form>
+  </div>
+
+  <!-- Application -->
+  <div id="app" class="hidden">
+    <aside class="sidebar">
+      <div class="top">
+        <div class="name">⚖ mGlobal</div>
+        <div class="sub" id="spaceName">—</div>
+      </div>
+      <nav class="nav" id="nav"></nav>
+      <div class="bottom"><button class="logout" id="btnLogout">🚪 Déconnexion</button></div>
+    </aside>
+    <div class="main">
+      <div class="topbar">
+        <button class="btn back" id="btnBack" style="display:none">← Retour</button>
+        <div class="ttl" id="pageTitle">Dashboard</div>
+        <div class="who" id="who"></div>
+      </div>
+      <div class="content" id="content"></div>
+      <footer class="app-copyright">© mGlobalTec — Aladji SALL · 771184001 · aladjisall@gmail.com / macb.global@gmail.com · Dakar, Sénégal</footer>
+    </div>
+  </div>
+
+  <div id="modalHost"></div>
+  <script src="/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator)
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  </script>
+</body>
+</html>

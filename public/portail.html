@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mGlobal — Espace Client</title>
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <style>
+    :root{
+      --bg:#0f172a; --card:#ffffff; --ink:#1e293b; --muted:#64748b; --line:#e2e8f0;
+      --blue:#0f3d6e; --blue2:#2563eb; --green:#15803d; --red:#b91c1c; --soft:#f1f5f9;
+    }
+    *{box-sizing:border-box;}
+    body{margin:0;font-family:'Segoe UI',system-ui,Arial,sans-serif;color:var(--ink);
+      background:linear-gradient(160deg,#0f172a 0%,#1e293b 45%,#0f3d6e 100%);min-height:100vh;}
+
+    /* ── Connexion ── */
+    .auth-wrap{max-width:430px;margin:0 auto;padding:9vh 18px;}
+    .auth{background:var(--card);border-radius:16px;padding:36px 30px;box-shadow:0 24px 60px rgba(0,0,0,.35);text-align:center;}
+    .auth .logo{font-size:38px;}
+    .auth h1{margin:8px 0 2px;color:var(--blue);font-size:22px;}
+    .auth p.sub{color:var(--muted);font-size:13px;margin:0 0 24px;}
+    .auth label{display:block;text-align:left;font-weight:600;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px;}
+    .auth input{width:100%;padding:13px 14px;border:1px solid var(--line);border-radius:9px;font-size:16px;letter-spacing:1px;text-transform:uppercase;}
+    .auth button{width:100%;margin-top:18px;padding:13px;background:var(--blue2);color:#fff;font-weight:700;
+      border:0;border-radius:9px;cursor:pointer;font-size:15px;transition:.15s;}
+    .auth button:hover{background:var(--blue);}
+    .auth .err{color:var(--red);font-size:13px;min-height:18px;margin-top:10px;}
+    .auth .alt{margin-top:18px;font-size:13px;color:var(--muted);}
+    .auth .alt a{color:var(--blue2);text-decoration:none;font-weight:600;}
+
+    /* ── Dashboard ── */
+    .dash{max-width:1060px;margin:0 auto;padding:26px 18px 60px;}
+    .topbar{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;
+      background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:18px 22px;color:#fff;margin-bottom:22px;}
+    .topbar .who h1{margin:0;font-size:21px;}
+    .topbar .who .meta{font-size:13px;color:#cbd5e1;margin-top:3px;}
+    .topbar .vendor{display:flex;align-items:center;gap:12px;text-align:right;}
+    .topbar .vendor img{max-height:48px;max-width:150px;object-fit:contain;background:#fff;border-radius:8px;padding:4px;}
+    .topbar .vendor .vn{font-size:14px;font-weight:700;}
+    .topbar .vendor .vc{font-size:12px;color:#cbd5e1;}
+    .actions{display:flex;gap:10px;}
+    .actions button{padding:10px 16px;border:0;border-radius:9px;cursor:pointer;font-weight:600;font-size:13px;}
+    .btn-print{background:#fff;color:var(--blue);}
+    .btn-out{background:rgba(255,255,255,.15);color:#fff;}
+
+    .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px;}
+    .kpi{background:var(--card);border-radius:13px;padding:18px;box-shadow:0 8px 24px rgba(0,0,0,.18);border-left:5px solid var(--blue2);}
+    .kpi .l{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700;}
+    .kpi .v{font-size:24px;font-weight:800;margin-top:8px;}
+    .kpi.dette{border-left-color:var(--red);}      .kpi.dette .v{color:var(--red);}
+    .kpi.relicat{border-left-color:var(--green);}  .kpi.relicat .v{color:var(--green);}
+    .kpi.fact{border-left-color:var(--blue);}
+    .kpi.tonnage{border-left-color:#d97706;}
+
+    .panel{background:var(--card);border-radius:14px;padding:22px 24px;box-shadow:0 8px 24px rgba(0,0,0,.18);margin-bottom:22px;}
+    .panel h3{margin:0 0 4px;color:var(--blue);font-size:16px;display:flex;align-items:center;gap:8px;}
+    .panel .sub{color:var(--muted);font-size:12px;margin:0 0 14px;}
+    table{width:100%;border-collapse:collapse;}
+    th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);
+      padding:10px 12px;border-bottom:2px solid var(--line);}
+    td{padding:11px 12px;border-bottom:1px solid var(--soft);font-size:13px;}
+    tbody tr:hover{background:var(--soft);}
+    .r{text-align:right;} .b{font-weight:700;}
+    .pos{color:var(--green);font-weight:700;} .neg{color:var(--red);font-weight:700;}
+    .pill{display:inline-block;padding:3px 10px;border-radius:11px;font-size:11px;font-weight:700;}
+    .pill.payee{background:#dcfce7;color:#15803d;} .pill.partielle{background:#fef9c3;color:#a16207;}
+    .pill.emise{background:#dbeafe;color:#1d4ed8;} .pill.annulee{background:#f3e8ff;color:#7e22ce;}
+    .empty{text-align:center;color:var(--muted);padding:22px;font-size:13px;}
+    .d-none{display:none!important;}
+    .portail-copyright{text-align:center;color:var(--muted);font-size:12px;margin:26px 0 8px;}
+    @media print{
+      body{background:#fff;} .topbar{background:#fff;color:#000;border:1px solid #ccc;}
+      .topbar .who h1,.topbar .vendor .vn{color:#000;} .actions{display:none;}
+      .panel,.kpi{box-shadow:none;border:1px solid #ddd;}
+    }
+  </style>
+</head>
+<body>
+
+  <!-- CONNEXION -->
+  <div class="auth-wrap" id="auth-section">
+    <div class="auth">
+      <div class="logo">⚖</div>
+      <h1>Espace Client mGlobal</h1>
+      <p class="sub">Consultez votre situation, vos factures et vos livraisons en temps réel</p>
+      <label for="input-immatriculation">Code / Immatriculation client</label>
+      <input type="text" id="input-immatriculation" placeholder="Ex : MGL-3F2A9X" autocomplete="off">
+      <label style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:normal;font-weight:500;color:var(--ink);margin-top:14px;cursor:pointer">
+        <input type="checkbox" id="chk-remember" style="width:auto;margin:0" checked>
+        Mémoriser mon code et ouvrir automatiquement mon espace</label>
+      <button id="btn-login">Accéder à mon espace</button>
+      <div class="err" id="auth-err"></div>
+      <p class="alt">Vous êtes fournisseur ? <a href="/">Connexion fournisseur</a></p>
+    </div>
+  </div>
+
+  <!-- TABLEAU DE BORD -->
+  <div class="dash d-none" id="dashboard-section">
+    <div class="topbar">
+      <div class="who">
+        <h1 id="txt-bienvenu">Espace Client</h1>
+        <div class="meta" id="txt-clientmeta"></div>
+      </div>
+      <div class="vendor" id="vendor-box"></div>
+    </div>
+    <div class="actions" style="justify-content:flex-end;margin-bottom:18px">
+      <button class="btn-print" onclick="window.print()">🖨️ Imprimer ma situation</button>
+      <button class="btn-out" onclick="deconnexion()">↩ Quitter</button>
+    </div>
+
+    <div class="kpis" id="kpis"></div>
+
+    <!-- Situation financière -->
+    <div class="panel">
+      <h3>💰 Relevé de facturation</h3>
+      <p class="sub">Détail de vos factures avec montants HT, TVA et reste à payer.</p>
+      <table>
+        <thead><tr><th>N° Facture</th><th>Date</th><th>N° Bon</th><th class="r">Montant HT</th>
+          <th class="r">TVA</th><th class="r">TTC</th><th class="r">Réglé</th><th class="r">Reste</th><th>Statut</th></tr></thead>
+        <tbody id="tbody-factures"></tbody>
+      </table>
+    </div>
+
+    <!-- Livraisons / pesées -->
+    <div class="panel">
+      <h3>🚚 Mes livraisons (bons de pesage)</h3>
+      <p class="sub">Historique des chargements pesés au pont bascule.</p>
+      <table>
+        <thead><tr><th>N° Ticket</th><th>Date</th><th>Produit</th><th>Immat.</th>
+          <th class="r">Poids net (t)</th><th class="r">Montant</th></tr></thead>
+        <tbody id="tbody-pesees"></tbody>
+      </table>
+    </div>
+
+    <!-- Enlèvements gros -->
+    <div class="panel">
+      <h3>🧱 Mes comptes en gros (enlèvements)</h3>
+      <p class="sub">Volumes achetés en gros et soldes restant à enlever en dépôt.</p>
+      <table>
+        <thead><tr><th>Produit</th><th class="r">Volume acheté</th><th class="r">Déjà enlevé</th>
+          <th class="r">Reste en dépôt</th></tr></thead>
+        <tbody id="tbody-enlevements"></tbody>
+      </table>
+    </div>
+
+    <footer class="portail-copyright">© mGlobalTec — Aladji SALL · 771184001 · aladjisall@gmail.com / macb.global@gmail.com · Dakar, Sénégal</footer>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fmt = (n) => Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    const fmt3 = (n) => Number(n || 0).toLocaleString('fr-FR', { minimumFractionDigits: 0, maximumFractionDigits: 3 });
+    const esc = (x) => String(x ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const dt = (s) => esc(String(s || '').slice(0, 16).replace('T', ' '));
+
+    let DEVISE = 'FCFA';
+    const REMEMBER_KEY = 'mg_client_immat';
+
+    async function authentifier(silent) {
+      const immatriculation = $('input-immatriculation').value.trim();
+      $('auth-err').textContent = '';
+      if (!immatriculation) { if (!silent) $('auth-err').textContent = 'Veuillez saisir votre code / immatriculation.'; return; }
+      try {
+        const res = await fetch('/api/portail-public/connexion', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ immatriculation })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Immatriculation introuvable');
+        if ($('chk-remember').checked) localStorage.setItem(REMEMBER_KEY, immatriculation);
+        else localStorage.removeItem(REMEMBER_KEY);
+        rendre(data);
+      } catch (e) {
+        localStorage.removeItem(REMEMBER_KEY);
+        if (!silent) $('auth-err').textContent = e.message;
+      }
+    }
+    function deconnexion() { localStorage.removeItem(REMEMBER_KEY); location.reload(); }
+
+    function rendre(data) {
+      $('auth-section').classList.add('d-none');
+      $('dashboard-section').classList.remove('d-none');
+      const c = data.client, d = data.distributeur || {}, r = data.resume || {};
+
+      $('txt-bienvenu').textContent = c.nom;
+      $('txt-clientmeta').textContent =
+        [c.immatriculation, c.telephone, c.adresse].filter(Boolean).join('  ·  ');
+
+      const vn = d.raison_sociale || d.nom || '';
+      const vc = [d.adresse, d.ville, d.telephone].filter(Boolean).join(' · ');
+      $('vendor-box').innerHTML =
+        (d.logo ? `<img src="${esc(d.logo)}" alt="logo">` : '') +
+        `<div><div class="vn">${esc(vn)}</div><div class="vc">${esc(vc)}</div></div>`;
+
+      $('kpis').innerHTML = [
+        ['dette', 'Dettes / Restes à payer', fmt(c.solde_dette) + ' ' + DEVISE],
+        ['relicat', 'Acomptes / Relicats', fmt(c.solde_relicat) + ' ' + DEVISE],
+        ['fact', 'Total facturé', fmt(r.totalFacture) + ' ' + DEVISE],
+        ['fact', 'Total réglé', fmt(r.totalRegle) + ' ' + DEVISE],
+        ['tonnage', 'Tonnage livré', fmt3(r.tonnageTotal) + ' t']
+      ].map(([cls, l, v]) => `<div class="kpi ${cls}"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('');
+
+      // Factures
+      $('tbody-factures').innerHTML = (data.factures || []).length
+        ? data.factures.map(f => `<tr>
+            <td class="b">${esc(f.numero || '—')}</td><td>${dt(f.date)}</td><td>${esc(f.numero_bon || '—')}</td>
+            <td class="r">${fmt(f.montant_ht)}</td><td class="r">${fmt(f.montant_tva)}</td>
+            <td class="r b">${fmt(f.montant_total)}</td><td class="r">${fmt(f.montant_paye)}</td>
+            <td class="r ${f.relicat > 0 ? 'neg' : 'pos'}">${fmt(f.relicat)}</td>
+            <td><span class="pill ${esc(f.statut || 'emise')}">${esc(f.statut || 'émise')}</span></td></tr>`).join('')
+        : '<tr><td colspan="9" class="empty">Aucune facture disponible.</td></tr>';
+
+      // Pesées
+      $('tbody-pesees').innerHTML = (data.pesees || []).length
+        ? data.pesees.map(p => `<tr>
+            <td class="b">${esc(p.numero_ticket || '—')}</td><td>${dt(p.date_sortie)}</td>
+            <td>${esc(p.produit || '—')}</td><td>${esc(p.immatriculation || '—')}</td>
+            <td class="r b">${fmt3(p.poids_net)}</td><td class="r">${fmt(p.montant_total)}</td></tr>`).join('')
+        : '<tr><td colspan="6" class="empty">Aucune livraison enregistrée.</td></tr>';
+
+      // Enlèvements
+      $('tbody-enlevements').innerHTML = (data.enlevements || []).length
+        ? data.enlevements.map(e => {
+            const enleve = (e.quantite_totale || 0) - (e.quantite_restante || 0);
+            return `<tr><td class="b">${esc(e.nom || '—')}</td>
+              <td class="r">${fmt3(e.quantite_totale)} ${esc(e.unite || '')}</td>
+              <td class="r">${fmt3(enleve)} ${esc(e.unite || '')}</td>
+              <td class="r b" style="color:var(--blue2)">${fmt3(e.quantite_restante)} ${esc(e.unite || '')}</td></tr>`;
+          }).join('')
+        : '<tr><td colspan="4" class="empty">Aucun compte en gros en cours.</td></tr>';
+    }
+
+    $('btn-login').addEventListener('click', () => authentifier(false));
+    $('input-immatriculation').addEventListener('keydown', (e) => { if (e.key === 'Enter') authentifier(false); });
+
+    // Ouverture automatique si un code a été mémorisé.
+    (function autoOuverture() {
+      const saved = localStorage.getItem(REMEMBER_KEY);
+      if (saved) { $('input-immatriculation').value = saved; $('chk-remember').checked = true; authentifier(true); }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "mglobal-cloud",
+  "version": "1.0.0",
+  "description": "Plateforme cloud multi-distributeurs pour mGlobal Pont Bascule (pesage, bons, comptabilité, facturation, relicat, stock, espaces distributeurs & fournisseurs).",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "nanoid": "^5.0.7",
+    "ws": "^8.18.0"
+  }
+}
