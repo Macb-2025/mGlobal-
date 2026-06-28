@@ -33,7 +33,8 @@ function mapBon(b) {
     numeroTicket: b.numero_ticket, operateur: b.operateur, motifRejet: b.motif_rejet,
     sourceSortieId: b.source_sortie_id, createdAt: b.created_at, updatedAt: b.updated_at,
     signature: b.signature, signaturePar: b.signature_par, signatureLe: b.signature_le,
-    signatureValide: b.signature ? verifierBon(b) : null
+    signatureValide: b.signature ? verifierBon(b) : null,
+    siteId: b.site_id, siteNom: b.site_nom
   };
 }
 

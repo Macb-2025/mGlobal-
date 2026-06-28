@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS print_jobs (
 );
 
 CREATE TABLE IF NOT EXISTS live (
-  id        INTEGER PRIMARY KEY CHECK (id = 1),
+  site_id   INTEGER PRIMARY KEY,
+  site_nom  TEXT,
   connected INTEGER DEFAULT 0,
   stable    INTEGER DEFAULT 0,
   kg        REAL DEFAULT 0,
@@ -325,8 +326,8 @@ CREATE TABLE IF NOT EXISTS ota_updates (
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-INSERT OR IGNORE INTO live (id, connected, stable, kg, valeur, unite, ts)
-VALUES (1, 0, 0, 0, 0, 't', datetime('now'));
+-- Compatibilité : l'ancienne live single-row est remplacée par multi-pont.
+-- Les données live sont créées/mises à jour dynamiquement par l'ingestion.
 `);
 
 // ── Migrations légères : ajoute les colonnes manquantes aux bases existantes ──
@@ -337,7 +338,32 @@ function addColumn(table, col, ddl) {
     console.log(`[migration] ${table}.${col} ajouté`);
   }
 }
+// Migration : convertir l'ancienne table live (single-row id=1) vers multi-pont (site_id).
+try {
+  const liveCols = db.prepare(`PRAGMA table_info(live)`).all();
+  if (liveCols.some(c => c.name === 'id') && !liveCols.some(c => c.name === 'site_id')) {
+    db.exec(`DROP TABLE IF EXISTS live`);
+    db.exec(`CREATE TABLE live (
+      site_id INTEGER PRIMARY KEY, site_nom TEXT,
+      connected INTEGER DEFAULT 0, stable INTEGER DEFAULT 0,
+      kg REAL DEFAULT 0, valeur REAL DEFAULT 0, unite TEXT DEFAULT 't', ts TEXT
+    )`);
+    console.log('[migration] Table live migrée vers multi-pont');
+  }
+} catch {}
+
 addColumn('distributeurs', 'gele', 'gele INTEGER NOT NULL DEFAULT 0');
+
+// Multi-pont bascule : lier chaque site à un distributeur.
+addColumn('sites', 'distributeur_id', 'distributeur_id INTEGER REFERENCES distributeurs(id) ON DELETE SET NULL');
+
+// Traçabilité pont : quel pont a traité chaque pesée.
+addColumn('sorties', 'site_id', 'site_id INTEGER');
+addColumn('sorties', 'site_nom', 'site_nom TEXT');
+addColumn('entrees', 'site_id', 'site_id INTEGER');
+addColumn('entrees', 'site_nom', 'site_nom TEXT');
+addColumn('bons_commande', 'site_id', 'site_id INTEGER');
+addColumn('bons_commande', 'site_nom', 'site_nom TEXT');
 // Compte fournisseur (rôle 'fournisseur') rattaché à une entité fournisseur.
 addColumn('users', 'fournisseur_id', 'fournisseur_id INTEGER REFERENCES fournisseurs(id) ON DELETE CASCADE');
 addColumn('bons_commande', 'numero', 'numero INTEGER');

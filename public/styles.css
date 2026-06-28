@@ -196,3 +196,6 @@ table.fa-lignes td.r { text-align:right; font-weight:700; color:var(--accent); w
 }
 .verif-bon.ok { background: rgba(0,230,118,.08); border-color: rgba(0,230,118,.4); }
 .verif-bon .btn.sec { margin-left: 4px; }
+
+/* Multi-pont live display */
+.live-ponts { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:18px; }

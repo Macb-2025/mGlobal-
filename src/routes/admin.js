@@ -97,15 +97,26 @@ r.post('/distributeurs', requireRole('superadmin'), (req, res) => {
   }
 });
 
-// Contrôle total du super-admin : activer/désactiver et geler/dégeler un espace.
+// Contrôle total du super-admin : activer/désactiver, geler/dégeler, modifier un espace.
 r.patch('/distributeurs/:id', requireRole('superadmin'), (req, res) => {
   const d = db.prepare(`SELECT * FROM distributeurs WHERE id = ?`).get(req.params.id);
   if (!d) return res.status(404).json({ error: 'Distributeur introuvable' });
-  const { actif, gele } = req.body || {};
+  const { actif, gele, nom } = req.body || {};
   if (actif !== undefined) db.prepare(`UPDATE distributeurs SET actif = ? WHERE id = ?`).run(actif ? 1 : 0, d.id);
   if (gele  !== undefined) db.prepare(`UPDATE distributeurs SET gele  = ? WHERE id = ?`).run(gele ? 1 : 0, d.id);
+  if (nom !== undefined && nom.trim()) db.prepare(`UPDATE distributeurs SET nom = ? WHERE id = ?`).run(nom.trim(), d.id);
   const maj = db.prepare(`SELECT id, nom, actif, gele FROM distributeurs WHERE id = ?`).get(d.id);
   res.json({ ok: true, distributeur: maj });
+});
+
+// Supprimer un distributeur (et toutes ses données en cascade).
+r.delete('/distributeurs/:id', requireRole('superadmin'), (req, res) => {
+  const d = db.prepare(`SELECT * FROM distributeurs WHERE id = ?`).get(req.params.id);
+  if (!d) return res.status(404).json({ error: 'Distributeur introuvable' });
+  db.prepare(`DELETE FROM distributeurs WHERE id = ?`).run(d.id);
+  // Détacher les sites liés (ne pas les supprimer, juste délier)
+  db.prepare(`UPDATE sites SET distributeur_id = NULL WHERE distributeur_id = ?`).run(d.id);
+  res.json({ ok: true });
 });
 
 // ───────────── Super-admin : comptes fournisseurs (login + mot de passe) ─────────────
@@ -178,8 +189,47 @@ r.delete('/fournisseurs-comptes/:id', requireRole('superadmin'), (req, res) => {
   res.json({ ok: true });
 });
 
+// ───────────── Super-admin : sites (ponts bascule) multi-pont ─────────────
 r.get('/sites', requireRole('superadmin'), (req, res) => {
-  res.json(db.prepare(`SELECT id, nom, site_key, actif, last_seen, created_at FROM sites ORDER BY id`).all());
+  const rows = db.prepare(`
+    SELECT s.id, s.nom, s.site_key, s.actif, s.last_seen, s.created_at,
+           s.distributeur_id, d.nom AS distributeur_nom
+    FROM sites s LEFT JOIN distributeurs d ON d.id = s.distributeur_id
+    ORDER BY s.id`).all();
+  res.json(rows);
+});
+
+// Créer un nouveau site (pont bascule), optionnellement lié à un distributeur.
+r.post('/sites', requireRole('superadmin'), (req, res) => {
+  const { nom, distributeur_id } = req.body || {};
+  if (!nom) return res.status(400).json({ error: 'Nom du pont bascule requis' });
+  const sk = newKey();
+  const info = db.prepare(`INSERT INTO sites (nom, site_key, distributeur_id) VALUES (?,?,?)`)
+    .run(nom, sk, distributeur_id || null);
+  // Créer une licence par défaut
+  const lk = 'LIC-' + newKey();
+  db.prepare(`INSERT INTO licences (site_id, license_key, status) VALUES (?, ?, 'ACTIVE')`)
+    .run(info.lastInsertRowid, lk);
+  res.json({ ok: true, id: info.lastInsertRowid, site_key: sk, license_key: lk });
+});
+
+// Modifier un site (nom, distributeur rattaché, actif).
+r.patch('/sites/:id', requireRole('superadmin'), (req, res) => {
+  const s = db.prepare(`SELECT * FROM sites WHERE id = ?`).get(req.params.id);
+  if (!s) return res.status(404).json({ error: 'Site introuvable' });
+  const { nom, distributeur_id, actif } = req.body || {};
+  if (nom !== undefined) db.prepare(`UPDATE sites SET nom = ? WHERE id = ?`).run(nom, s.id);
+  if (distributeur_id !== undefined)
+    db.prepare(`UPDATE sites SET distributeur_id = ? WHERE id = ?`).run(distributeur_id || null, s.id);
+  if (actif !== undefined) db.prepare(`UPDATE sites SET actif = ? WHERE id = ?`).run(actif ? 1 : 0, s.id);
+  res.json({ ok: true });
+});
+
+// Supprimer un site.
+r.delete('/sites/:id', requireRole('superadmin'), (req, res) => {
+  const info = db.prepare(`DELETE FROM sites WHERE id = ?`).run(req.params.id);
+  if (!info.changes) return res.status(404).json({ error: 'Site introuvable' });
+  res.json({ ok: true });
 });
 
 r.post('/sites/:id/rotate', requireRole('superadmin'), (req, res) => {

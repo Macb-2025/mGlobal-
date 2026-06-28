@@ -159,10 +159,10 @@ async function pageDashboard() {
   $('pageTitle').textContent = 'Dashboard mGlobal (commun)';
   const c = $('content');
   c.innerHTML = `
-    <div class="live"><div><span class="w" id="liveW">0.000</span> <span class="u" id="liveU">t</span></div>
-      <div class="s" id="liveS">Connexion…</div></div>
+    <div id="livePonts" class="live-ponts"></div>
     <div class="kpis" id="kpis"></div>
-    <div class="panel"><h3>Répartition par distributeur</h3><div id="byDist"></div></div>`;
+    <div class="panel"><h3>Répartition par distributeur</h3><div id="byDist"></div></div>
+    <div class="panel"><h3>Répartition par pont bascule</h3><div id="byPont"></div></div>`;
   refreshLive();
   S.liveTimer = setInterval(refreshLive, 1500);
   try {
@@ -175,21 +175,50 @@ async function pageDashboard() {
       <tr><th>Distributeur</th><th>Bons</th><th>Total tonnes</th></tr>
       ${g.parDistributeur.map(d => `<tr><td>${esc(d.distributeur)}</td><td>${d.nbBons}</td><td>${fmt(d.totalTonnes)}</td></tr>`).join('')}
       </table>` : '<div class="hint">Aucune donnée pour le moment.</div>';
+    $('byPont').innerHTML = (g.parPont && g.parPont.length) ? `<table>
+      <tr><th>Pont bascule</th><th>Bons</th><th>Total tonnes</th></tr>
+      ${g.parPont.map(p => `<tr><td>${esc(p.pont)}</td><td>${p.nbBons}</td><td>${fmt(p.totalTonnes)}</td></tr>`).join('')}
+      </table>` : '<div class="hint">Aucune donnée par pont pour le moment.</div>';
   } catch (e) { toast(e.message, true); }
 }
 async function refreshLive() {
   try {
-    const l = await api('/dashboard/live');
+    const d = await api('/dashboard/live');
     if (S.page !== 'dashboard') return;
-    applyLive(l);
+    applyLiveMulti(d.ponts || []);
   } catch {}
 }
-function applyLive(l) {
-  if (!$('liveW')) return;
-  $('liveW').textContent = fmt(l.valeur);
-  $('liveU').textContent = l.unite;
-  $('liveS').textContent = !l.connected ? '● Balance déconnectée' : (l.stable ? '✔ Poids stable' : '… en pesée');
-  $('liveS').style.color = l.stable ? 'var(--green)' : 'var(--accent)';
+function applyLiveMulti(ponts) {
+  const box = $('livePonts'); if (!box) return;
+  if (!ponts.length) {
+    box.innerHTML = `<div class="live"><div><span class="w">0.000</span> <span class="u">t</span></div>
+      <div class="s">Aucun pont connecté</div></div>`;
+    return;
+  }
+  box.innerHTML = ponts.map(l => {
+    const st = !l.connected ? '● Déconnecté' : (l.stable ? '✔ Stable' : '… en pesée');
+    const col = !l.connected ? '#999' : (l.stable ? 'var(--green)' : 'var(--accent)');
+    return `<div class="live" style="flex:1;min-width:220px">
+      <div style="font-size:12px;color:#666;margin-bottom:4px">${esc(l.siteNom || 'Pont #' + l.siteId)}</div>
+      <div><span class="w">${fmt(l.valeur)}</span> <span class="u">${esc(l.unite)}</span></div>
+      <div class="s" style="color:${col}">${st}</div></div>`;
+  }).join('');
+}
+function applyLiveSingle(l) {
+  const box = $('livePonts'); if (!box) return;
+  const existing = box.querySelectorAll('.live');
+  let found = false;
+  existing.forEach(div => {
+    if (div.dataset.siteId === String(l.siteId)) {
+      const st = !l.connected ? '● Déconnecté' : (l.stable ? '✔ Stable' : '… en pesée');
+      const col = !l.connected ? '#999' : (l.stable ? 'var(--green)' : 'var(--accent)');
+      div.querySelector('.w').textContent = fmt(l.valeur);
+      div.querySelector('.u').textContent = l.unite;
+      const s = div.querySelector('.s'); s.textContent = st; s.style.color = col;
+      found = true;
+    }
+  });
+  if (!found) refreshLive();
 }
 
 /* ───────────── Bons / Pesées ───────────── */
@@ -210,10 +239,12 @@ async function loadBons() {
   try {
     const rows = await api(`/sorties?from=${$('bFrom').value}&to=${$('bTo').value}`);
     $('bTable').innerHTML = rows.length ? `<table>
-      <tr><th>Ticket</th><th>Immat.</th><th>Client</th><th>Produit</th><th>Net (t)</th><th>Heure</th><th></th></tr>
+      <tr><th>Ticket</th><th>Immat.</th><th>Client</th><th>Produit</th><th>Net (t)</th><th>Pont</th><th>Heure</th><th></th></tr>
       ${rows.map(s => `<tr>
         <td>${esc(s.numeroTicket)}</td><td>${esc(s.immatriculation)}</td><td>${esc(s.client)}</td>
-        <td>${esc(s.produit)}</td><td>${fmt(s.poidsNet)}</td><td>${esc((s.dateSortie || '').slice(11, 16))}</td>
+        <td>${esc(s.produit)}</td><td>${fmt(s.poidsNet)}</td>
+        <td>${esc(s.siteNom || '—')}</td>
+        <td>${esc((s.dateSortie || '').slice(11, 16))}</td>
         <td class="row-actions">
           <button class="btn sec" onclick="voirBon(${s.id})">Voir</button>
           <button class="btn sec" onclick="imprimerSortie(${s.id})">Imprimer</button>
@@ -395,7 +426,7 @@ function renderSuivi(rows) {
   const isAdmin = S.user.role === 'admin';
   t.innerHTML = `<table>
     <tr><th>N°</th><th>Référence</th><th>Client</th><th>Produit</th><th>Immat.</th>
-      <th>Qté prévue</th><th>Avancement</th><th>Net (t)</th><th>Signature</th><th></th></tr>
+      <th>Qté prévue</th><th>Avancement</th><th>Net (t)</th><th>Pont</th><th>Signature</th><th></th></tr>
     ${rows.map(b => {
       const si = statutInfo(b.statut);
       const editable = ['en_attente', 'recu'].includes(b.statut);
@@ -407,6 +438,7 @@ function renderSuivi(rows) {
         <td><span class="badge ${si.cls}">${si.label}</span>
           <div class="prog"><div class="prog-bar ${si.cls}" style="width:${b.progression}%"></div></div></td>
         <td>${b.poidsNet != null ? fmt(b.poidsNet) : '—'}</td>
+        <td>${esc(b.siteNom || '—')}</td>
         <td>${b.signature ? `<span class="sig-ok" title="${esc(b.signature)}">🔏 signé</span>` : '—'}</td>
         <td class="row-actions">
           <button class="btn sec" onclick="suiviDetail(${b.id})">Suivi</button>
@@ -526,7 +558,7 @@ function connectWS() {
     ws.onmessage = (ev) => {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if ((m.type === 'bon:maj' || m.type === 'bon:nouveau' || m.type === 'bon:annule') && S.page === 'suivi') loadSuivi();
-      if (m.type === 'live' && S.page === 'dashboard' && m.live) applyLive(m.live);
+      if (m.type === 'live' && S.page === 'dashboard' && m.live) applyLiveSingle(m.live);
     };
   } catch {}
 }
@@ -1343,7 +1375,8 @@ async function pageRapports() {
       <button class="btn sec" id="rPrint">🖨 Imprimer</button></div>
     <div class="kpis" id="rKpis"></div>
     <h3>Répartition par produit</h3><div id="rProd"></div>
-    <h3 style="margin-top:16px">Répartition par client</h3><div id="rCli"></div></div>`;
+    <h3 style="margin-top:16px">Répartition par client</h3><div id="rCli"></div>
+    <h3 style="margin-top:16px">Répartition par pont bascule</h3><div id="rPont"></div></div>`;
   $('rGo').onclick = loadStats; $('rPrint').onclick = () => window.print();
   loadStats();
 }
@@ -1359,6 +1392,10 @@ async function loadStats() {
       : '<div class="hint">—</div>';
     $('rProd').innerHTML = tbl(s.parProduit);
     $('rCli').innerHTML = tbl(s.parClient);
+    $('rPont').innerHTML = (s.parPont && s.parPont.length) ? `<table>
+      <tr><th>Pont bascule</th><th>Bons</th><th>Total (t)</th></tr>
+      ${s.parPont.map(p => `<tr><td>${esc(p.pont)}</td><td>${p.nbBons}</td><td>${fmt(p.total)}</td></tr>`).join('')}
+      </table>` : '<div class="hint">—</div>';
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1434,11 +1471,17 @@ async function pageAdmin() {
   $('pageTitle').textContent = 'Administration mGlobal';
   const c = $('content');
   c.innerHTML = `
-    <div class="panel"><h3>Liaison du poste pont bascule</h3>
-      <div class="hint">Collez l'URL ci-dessous et la <b>clé de liaison</b> dans mGlobal
-        (Paramètres → 🌐 Accès distant → Lier à la plateforme cloud).</div>
+    <div class="panel"><h3>Ponts bascule (sites)</h3>
+      <div class="hint">Chaque pont bascule est identifié par un <b>nom</b> et une <b>clé de liaison</b> unique.
+        Rattachez-le à un distributeur pour organiser les pesées par espace.
+        Collez la clé dans mGlobal (Paramètres → 🌐 Accès distant).</div>
       <div style="margin:10px 0"><label>URL de la plateforme</label>
         <div class="keybox" id="platUrl"></div></div>
+      <div class="filters" style="margin-top:10px">
+        <span><label>Nom du pont</label><input id="siteNom" placeholder="Ex : Pont Entrée A"></span>
+        <span><label>Distributeur rattaché</label><select id="siteDistrib"><option value="">— Aucun —</option></select></span>
+        <button class="btn sec" id="siteAdd">Ajouter un pont</button>
+      </div>
       <div id="sites"></div></div>
     <div class="panel"><h3>Distributeurs (espaces)</h3>
       <div class="filters"><input id="dNom" placeholder="Nom du distributeur">
@@ -1474,22 +1517,41 @@ async function pageAdmin() {
   };
   $('dAdd').onclick = async () => {
     try { await api('/admin/distributeurs', { method: 'POST', body: JSON.stringify({ nom: $('dNom').value }) });
-      toast('Espace créé'); $('dNom').value = ''; loadDistribs(); }
+      toast('Espace créé'); $('dNom').value = ''; loadDistribs(); loadSites(); }
     catch (e) { toast(e.message, true); }
+  };
+  $('siteAdd').onclick = async () => {
+    const nom = $('siteNom').value.trim();
+    if (!nom) return toast('Nom du pont bascule requis', true);
+    const did = $('siteDistrib').value || null;
+    try {
+      const r = await api('/admin/sites', { method: 'POST', body: JSON.stringify({ nom, distributeur_id: did ? Number(did) : null }) });
+      toast(`Pont créé — clé : ${r.site_key}`); $('siteNom').value = ''; loadSites();
+    } catch (e) { toast(e.message, true); }
   };
   loadSites(); loadDistribs();
 }
 async function loadSites() {
   try {
     const sites = await api('/admin/sites');
+    // Remplir le select distributeur pour le formulaire d'ajout
+    try {
+      const ds = await api('/admin/distributeurs');
+      const sel = $('siteDistrib');
+      if (sel) sel.innerHTML = '<option value="">— Aucun —</option>' +
+        ds.map(d => `<option value="${d.id}">${esc(d.nom)}</option>`).join('');
+    } catch {}
     $('sites').innerHTML = `<table>
-      <tr><th>Site</th><th>Clé de liaison</th><th>Dernière synchro</th><th></th></tr>
+      <tr><th>Pont bascule</th><th>Clé de liaison</th><th>Distributeur</th><th>Dernière synchro</th><th></th></tr>
       ${sites.map(s => `<tr><td>${esc(s.nom)}</td>
         <td><span class="keybox">${esc(s.site_key)}</span></td>
+        <td>${esc(s.distributeur_nom || '— non rattaché')}</td>
         <td>${esc(s.last_seen || 'jamais')}</td>
         <td class="row-actions">
-          <button class="btn sec" onclick="dlConfig('${esc(s.site_key)}')">⬇ Config auto (.json)</button>
-          <button class="btn sec" onclick="rotateKey(${s.id})">Régénérer</button></td></tr>`).join('')}
+          <button class="btn sec" onclick="dlConfig('${esc(s.site_key)}')">⬇ Config</button>
+          <button class="btn sec" onclick="editSite(${s.id},'${esc(s.nom)}',${s.distributeur_id || 'null'})">Modifier</button>
+          <button class="btn sec" onclick="rotateKey(${s.id})">Régénérer clé</button>
+          <button class="btn danger" onclick="delSite(${s.id})">Suppr.</button></td></tr>`).join('')}
       </table>`;
   } catch (e) { toast(e.message, true); }
 }
@@ -1499,6 +1561,22 @@ window.dlConfig = (siteKey) => {
 window.rotateKey = async (id) => {
   if (!confirm('Régénérer la clé ? L\'ancienne ne fonctionnera plus.')) return;
   try { await api('/admin/sites/' + id + '/rotate', { method: 'POST' }); toast('Clé régénérée'); loadSites(); }
+  catch (e) { toast(e.message, true); }
+};
+window.editSite = async (id, nom, did) => {
+  const newNom = prompt('Nom du pont bascule :', nom);
+  if (newNom === null) return;
+  const newDid = prompt('ID du distributeur rattaché (laisser vide pour aucun) :', did || '');
+  if (newDid === null) return;
+  try {
+    await api('/admin/sites/' + id, { method: 'PATCH', body: JSON.stringify({
+      nom: newNom, distributeur_id: newDid ? Number(newDid) : null }) });
+    toast('Pont mis à jour'); loadSites();
+  } catch (e) { toast(e.message, true); }
+};
+window.delSite = async (id) => {
+  if (!confirm('Supprimer ce pont bascule ? Les pesées associées seront conservées.')) return;
+  try { await api('/admin/sites/' + id, { method: 'DELETE' }); toast('Pont supprimé'); loadSites(); }
   catch (e) { toast(e.message, true); }
 };
 async function loadDistribs() {
@@ -1513,8 +1591,10 @@ async function loadDistribs() {
         return `<tr><td>${esc(d.nom)}</td><td>${esc(d.slug)}</td><td>${d.nbUsers}</td><td>${d.nbBons}</td>
           <td>${etat}</td>
           <td class="row-actions">
+            <button class="btn sec" onclick="renameDistrib(${d.id},'${esc(d.nom)}')">Renommer</button>
             <button class="btn sec" onclick="setDistrib(${d.id},'actif',${d.actif ? 0 : 1})">${d.actif ? 'Désactiver' : 'Réactiver'}</button>
             <button class="btn ${d.gele ? 'sec' : 'danger'}" onclick="setDistrib(${d.id},'gele',${d.gele ? 0 : 1})">${d.gele ? 'Dégeler' : 'Geler (bloquer)'}</button>
+            <button class="btn danger" onclick="delDistrib(${d.id},'${esc(d.nom)}')">Supprimer</button>
           </td></tr>`;
       }).join('')}
       </table>`;
@@ -1525,6 +1605,19 @@ window.setDistrib = async (id, champ, val) => {
   if (!confirm(`Confirmer : ${labels[champ]} cet espace distributeur ?`)) return;
   try { await api('/admin/distributeurs/' + id, { method: 'PATCH', body: JSON.stringify({ [champ]: val }) });
     toast('Distributeur mis à jour'); loadDistribs(); }
+  catch (e) { toast(e.message, true); }
+};
+window.renameDistrib = async (id, nom) => {
+  const newNom = prompt('Nouveau nom du distributeur :', nom);
+  if (!newNom || newNom === nom) return;
+  try { await api('/admin/distributeurs/' + id, { method: 'PATCH', body: JSON.stringify({ nom: newNom }) });
+    toast('Distributeur renommé'); loadDistribs(); loadSites(); }
+  catch (e) { toast(e.message, true); }
+};
+window.delDistrib = async (id, nom) => {
+  if (!confirm(`ATTENTION : Supprimer le distributeur "${nom}" et TOUTES ses données (utilisateurs, bons, factures, etc.) ? Cette action est IRRÉVERSIBLE.`)) return;
+  try { await api('/admin/distributeurs/' + id, { method: 'DELETE' });
+    toast('Distributeur supprimé'); loadDistribs(); loadSites(); }
   catch (e) { toast(e.message, true); }
 };
 
