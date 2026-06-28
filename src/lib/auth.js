@@ -40,10 +40,22 @@ export function requireRole(...roles) {
 }
 
 // Authentification du poste pont bascule (clé de site) → req.site
+// Vérifie également le statut de la licence (anti-clonage).
 export function requireSite(req, res, next) {
   const k = req.headers['x-site-key'] || req.query.siteKey || '';
   const site = db.prepare(`SELECT * FROM sites WHERE site_key = ? AND actif = 1`).get(k);
   if (!site) return res.status(401).json({ error: 'Clé de liaison invalide' });
+
+  // Vérification licence : refuser les licences révoquées ou expirées.
+  const lic = db.prepare(`SELECT status, expires_at FROM licences WHERE site_id = ? ORDER BY id DESC LIMIT 1`)
+    .get(site.id);
+  if (lic) {
+    if (lic.status === 'REVOKED')
+      return res.status(403).json({ error: 'Licence révoquée', license_status: 'REVOKED' });
+    if (lic.status === 'EXPIRED' || (lic.expires_at && new Date(lic.expires_at) < new Date()))
+      return res.status(403).json({ error: 'Licence expirée', license_status: 'EXPIRED' });
+  }
+
   db.prepare(`UPDATE sites SET last_seen = datetime('now') WHERE id = ?`).run(site.id);
   req.site = site;
   next();

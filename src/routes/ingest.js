@@ -35,10 +35,10 @@ function ensureDistributeur(nom) {
 const upsertSortie = db.prepare(`
 INSERT INTO sorties (distributeur_id, source_id, numero_ticket, immatriculation, chauffeur,
   client, produit, poids_entree, poids_sortie, poids_net, prix_unitaire, montant_total,
-  date_sortie, operateur, destination, numero_bon, type_transaction, imprime, updated_at)
+  date_sortie, operateur, destination, numero_bon, type_transaction, imprime, site_id, site_nom, updated_at)
 VALUES (@distributeur_id, @source_id, @numero_ticket, @immatriculation, @chauffeur,
   @client, @produit, @poids_entree, @poids_sortie, @poids_net, @prix_unitaire, @montant_total,
-  @date_sortie, @operateur, @destination, @numero_bon, @type_transaction, @imprime, datetime('now'))
+  @date_sortie, @operateur, @destination, @numero_bon, @type_transaction, @imprime, @site_id, @site_nom, datetime('now'))
 ON CONFLICT(distributeur_id, source_id) DO UPDATE SET
   numero_ticket=excluded.numero_ticket, immatriculation=excluded.immatriculation,
   chauffeur=excluded.chauffeur, client=excluded.client, produit=excluded.produit,
@@ -46,20 +46,20 @@ ON CONFLICT(distributeur_id, source_id) DO UPDATE SET
   prix_unitaire=excluded.prix_unitaire, montant_total=excluded.montant_total,
   date_sortie=excluded.date_sortie, operateur=excluded.operateur, destination=excluded.destination,
   numero_bon=excluded.numero_bon, type_transaction=excluded.type_transaction,
-  imprime=excluded.imprime, updated_at=datetime('now')
+  imprime=excluded.imprime, site_id=excluded.site_id, site_nom=excluded.site_nom, updated_at=datetime('now')
 `);
 
 const upsertEntree = db.prepare(`
 INSERT INTO entrees (distributeur_id, source_id, numero_ticket, immatriculation, chauffeur,
-  client, produit, poids_entree, date_entree, operateur, origine, distributeur, updated_at)
+  client, produit, poids_entree, date_entree, operateur, origine, distributeur, site_id, site_nom, updated_at)
 VALUES (@distributeur_id, @source_id, @numero_ticket, @immatriculation, @chauffeur,
-  @client, @produit, @poids_entree, @date_entree, @operateur, @origine, @distributeur, datetime('now'))
+  @client, @produit, @poids_entree, @date_entree, @operateur, @origine, @distributeur, @site_id, @site_nom, datetime('now'))
 ON CONFLICT(distributeur_id, source_id) DO UPDATE SET
   numero_ticket=excluded.numero_ticket, immatriculation=excluded.immatriculation,
   chauffeur=excluded.chauffeur, client=excluded.client, produit=excluded.produit,
   poids_entree=excluded.poids_entree, date_entree=excluded.date_entree,
   operateur=excluded.operateur, origine=excluded.origine, distributeur=excluded.distributeur,
-  updated_at=datetime('now')
+  site_id=excluded.site_id, site_nom=excluded.site_nom, updated_at=datetime('now')
 `);
 
 // Synchro des pesées de sortie (lot)
@@ -87,7 +87,9 @@ r.post('/sorties', requireSite, (req, res) => {
         destination: s.destination || '',
         numero_bon: s.numeroBon || '',
         type_transaction: s.typeTransaction || '',
-        imprime: s.imprime ? 1 : 0
+        imprime: s.imprime ? 1 : 0,
+        site_id: req.site.id,
+        site_nom: req.site.nom
       });
       n++;
     }
@@ -116,7 +118,9 @@ r.post('/entrees', requireSite, (req, res) => {
         date_entree: normDate(e.dateEntree),
         operateur: e.operateur || '',
         origine: e.origine || '',
-        distributeur: e.distributeur || ''
+        distributeur: e.distributeur || '',
+        site_id: req.site.id,
+        site_nom: req.site.nom
       });
       n++;
     }
@@ -126,14 +130,22 @@ r.post('/entrees', requireSite, (req, res) => {
   res.json({ ok: true, recus: n });
 });
 
-// Poids en temps réel (état de la balance)
+// Poids en temps réel (état de la balance) — multi-pont : chaque site a sa propre ligne.
 r.post('/live', requireSite, (req, res) => {
   const l = req.body || {};
-  db.prepare(`UPDATE live SET connected=?, stable=?, kg=?, valeur=?, unite=?, ts=? WHERE id=1`)
-    .run(l.connected ? 1 : 0, l.stable ? 1 : 0, Number(l.kg || 0),
-         Number(l.valeur || 0), l.unite || 't', l.ts || new Date().toISOString());
-  // Diffusion temps réel à tous les écrans (dashboard commun)
+  const siteId = req.site.id;
+  const siteNom = req.site.nom;
+  db.prepare(`INSERT INTO live (site_id, site_nom, connected, stable, kg, valeur, unite, ts)
+    VALUES (?,?,?,?,?,?,?,?)
+    ON CONFLICT(site_id) DO UPDATE SET
+      site_nom=excluded.site_nom, connected=excluded.connected, stable=excluded.stable,
+      kg=excluded.kg, valeur=excluded.valeur, unite=excluded.unite, ts=excluded.ts`)
+    .run(siteId, siteNom, l.connected ? 1 : 0, l.stable ? 1 : 0,
+         Number(l.kg || 0), Number(l.valeur || 0), l.unite || 't',
+         l.ts || new Date().toISOString());
+  // Diffusion temps réel avec identification du pont
   emitToAll('live', { live: {
+    siteId, siteNom,
     connected: !!l.connected, stable: !!l.stable, kg: Number(l.kg || 0),
     valeur: Number(l.valeur || 0), unite: l.unite || 't', ts: l.ts || new Date().toISOString()
   }});
@@ -171,7 +183,8 @@ function mapBon(b) {
     progression: PROGRESSION[b.statut] ?? 0, creePar: b.cree_par, recuLe: b.recu_le,
     traiteLe: b.traite_le, poidsNet: b.poids_net, numeroTicket: b.numero_ticket,
     operateur: b.operateur, motifRejet: b.motif_rejet, createdAt: b.created_at, updatedAt: b.updated_at,
-    signature: b.signature, signaturePar: b.signature_par, signatureLe: b.signature_le
+    signature: b.signature, signaturePar: b.signature_par, signatureLe: b.signature_le,
+    siteId: b.site_id, siteNom: b.site_nom
   };
 }
 function fetchBon(id) {
@@ -199,8 +212,9 @@ r.post('/bons-commande/:id/statut', requireSite, (req, res) => {
   const row = fetchBon(id);
   if (!row) return res.status(404).json({ error: 'Bon introuvable' });
 
-  const sets = ['statut = @statut', "updated_at = datetime('now')"];
-  const params = { id, statut };
+  const sets = ['statut = @statut', "updated_at = datetime('now')",
+    'site_id = @site_id', 'site_nom = @site_nom'];
+  const params = { id, statut, site_id: req.site.id, site_nom: req.site.nom };
   if (statut === 'recu' && !row.recu_le) sets.push("recu_le = datetime('now')");
   if (['pese', 'termine'].includes(statut)) sets.push("traite_le = datetime('now')");
   if (b.poidsNet != null)     { sets.push('poids_net = @poids');   params.poids = Number(b.poidsNet); }

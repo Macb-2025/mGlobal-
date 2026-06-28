@@ -61,7 +61,8 @@ function menuFor(role) {
     return [
       { id: 'admin', label: '⚙ Administration' },
       { id: 'users', label: '🔑 Création de comptes' },
-      { id: 'fournisseursComptes', label: '🚚 Espaces fournisseurs' }
+      { id: 'fournisseursComptes', label: '🚚 Espaces fournisseurs' },
+      { id: 'licences', label: '🛡 Licences & OTA' }
     ];
   }
   // Fournisseur : son espace dédié (solde, livraisons au distributeur, historique).
@@ -142,7 +143,7 @@ function go(page, fromBack = false) {
      facturation: pageFacturation, relicat: pageRelicat, recherche: pageRecherche,
      compta: pageCompta, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
      parametres: pageParametres, fournisseursComptes: pageFournisseursComptes,
-     espaceFournisseur: pageEspaceFournisseur }[page] || pageDashboard)();
+     espaceFournisseur: pageEspaceFournisseur, licences: pageLicences }[page] || pageDashboard)();
 }
 function goBack() {
   const prev = S.history.pop();
@@ -158,10 +159,10 @@ async function pageDashboard() {
   $('pageTitle').textContent = 'Dashboard mGlobal (commun)';
   const c = $('content');
   c.innerHTML = `
-    <div class="live"><div><span class="w" id="liveW">0.000</span> <span class="u" id="liveU">t</span></div>
-      <div class="s" id="liveS">Connexion…</div></div>
+    <div id="livePonts" class="live-ponts"></div>
     <div class="kpis" id="kpis"></div>
-    <div class="panel"><h3>Répartition par distributeur</h3><div id="byDist"></div></div>`;
+    <div class="panel"><h3>Répartition par distributeur</h3><div id="byDist"></div></div>
+    <div class="panel"><h3>Répartition par pont bascule</h3><div id="byPont"></div></div>`;
   refreshLive();
   S.liveTimer = setInterval(refreshLive, 1500);
   try {
@@ -174,21 +175,50 @@ async function pageDashboard() {
       <tr><th>Distributeur</th><th>Bons</th><th>Total tonnes</th></tr>
       ${g.parDistributeur.map(d => `<tr><td>${esc(d.distributeur)}</td><td>${d.nbBons}</td><td>${fmt(d.totalTonnes)}</td></tr>`).join('')}
       </table>` : '<div class="hint">Aucune donnée pour le moment.</div>';
+    $('byPont').innerHTML = (g.parPont && g.parPont.length) ? `<table>
+      <tr><th>Pont bascule</th><th>Bons</th><th>Total tonnes</th></tr>
+      ${g.parPont.map(p => `<tr><td>${esc(p.pont)}</td><td>${p.nbBons}</td><td>${fmt(p.totalTonnes)}</td></tr>`).join('')}
+      </table>` : '<div class="hint">Aucune donnée par pont pour le moment.</div>';
   } catch (e) { toast(e.message, true); }
 }
 async function refreshLive() {
   try {
-    const l = await api('/dashboard/live');
+    const d = await api('/dashboard/live');
     if (S.page !== 'dashboard') return;
-    applyLive(l);
+    applyLiveMulti(d.ponts || []);
   } catch {}
 }
-function applyLive(l) {
-  if (!$('liveW')) return;
-  $('liveW').textContent = fmt(l.valeur);
-  $('liveU').textContent = l.unite;
-  $('liveS').textContent = !l.connected ? '● Balance déconnectée' : (l.stable ? '✔ Poids stable' : '… en pesée');
-  $('liveS').style.color = l.stable ? 'var(--green)' : 'var(--accent)';
+function applyLiveMulti(ponts) {
+  const box = $('livePonts'); if (!box) return;
+  if (!ponts.length) {
+    box.innerHTML = `<div class="live"><div><span class="w">0.000</span> <span class="u">t</span></div>
+      <div class="s">Aucun pont connecté</div></div>`;
+    return;
+  }
+  box.innerHTML = ponts.map(l => {
+    const st = !l.connected ? '● Déconnecté' : (l.stable ? '✔ Stable' : '… en pesée');
+    const col = !l.connected ? '#999' : (l.stable ? 'var(--green)' : 'var(--accent)');
+    return `<div class="live" style="flex:1;min-width:220px">
+      <div style="font-size:12px;color:#666;margin-bottom:4px">${esc(l.siteNom || 'Pont #' + l.siteId)}</div>
+      <div><span class="w">${fmt(l.valeur)}</span> <span class="u">${esc(l.unite)}</span></div>
+      <div class="s" style="color:${col}">${st}</div></div>`;
+  }).join('');
+}
+function applyLiveSingle(l) {
+  const box = $('livePonts'); if (!box) return;
+  const existing = box.querySelectorAll('.live');
+  let found = false;
+  existing.forEach(div => {
+    if (div.dataset.siteId === String(l.siteId)) {
+      const st = !l.connected ? '● Déconnecté' : (l.stable ? '✔ Stable' : '… en pesée');
+      const col = !l.connected ? '#999' : (l.stable ? 'var(--green)' : 'var(--accent)');
+      div.querySelector('.w').textContent = fmt(l.valeur);
+      div.querySelector('.u').textContent = l.unite;
+      const s = div.querySelector('.s'); s.textContent = st; s.style.color = col;
+      found = true;
+    }
+  });
+  if (!found) refreshLive();
 }
 
 /* ───────────── Bons / Pesées ───────────── */
@@ -209,10 +239,12 @@ async function loadBons() {
   try {
     const rows = await api(`/sorties?from=${$('bFrom').value}&to=${$('bTo').value}`);
     $('bTable').innerHTML = rows.length ? `<table>
-      <tr><th>Ticket</th><th>Immat.</th><th>Client</th><th>Produit</th><th>Net (t)</th><th>Heure</th><th></th></tr>
+      <tr><th>Ticket</th><th>Immat.</th><th>Client</th><th>Produit</th><th>Net (t)</th><th>Pont</th><th>Heure</th><th></th></tr>
       ${rows.map(s => `<tr>
         <td>${esc(s.numeroTicket)}</td><td>${esc(s.immatriculation)}</td><td>${esc(s.client)}</td>
-        <td>${esc(s.produit)}</td><td>${fmt(s.poidsNet)}</td><td>${esc((s.dateSortie || '').slice(11, 16))}</td>
+        <td>${esc(s.produit)}</td><td>${fmt(s.poidsNet)}</td>
+        <td>${esc(s.siteNom || '—')}</td>
+        <td>${esc((s.dateSortie || '').slice(11, 16))}</td>
         <td class="row-actions">
           <button class="btn sec" onclick="voirBon(${s.id})">Voir</button>
           <button class="btn sec" onclick="imprimerSortie(${s.id})">Imprimer</button>
@@ -394,7 +426,7 @@ function renderSuivi(rows) {
   const isAdmin = S.user.role === 'admin';
   t.innerHTML = `<table>
     <tr><th>N°</th><th>Référence</th><th>Client</th><th>Produit</th><th>Immat.</th>
-      <th>Qté prévue</th><th>Avancement</th><th>Net (t)</th><th>Signature</th><th></th></tr>
+      <th>Qté prévue</th><th>Avancement</th><th>Net (t)</th><th>Pont</th><th>Signature</th><th></th></tr>
     ${rows.map(b => {
       const si = statutInfo(b.statut);
       const editable = ['en_attente', 'recu'].includes(b.statut);
@@ -406,6 +438,7 @@ function renderSuivi(rows) {
         <td><span class="badge ${si.cls}">${si.label}</span>
           <div class="prog"><div class="prog-bar ${si.cls}" style="width:${b.progression}%"></div></div></td>
         <td>${b.poidsNet != null ? fmt(b.poidsNet) : '—'}</td>
+        <td>${esc(b.siteNom || '—')}</td>
         <td>${b.signature ? `<span class="sig-ok" title="${esc(b.signature)}">🔏 signé</span>` : '—'}</td>
         <td class="row-actions">
           <button class="btn sec" onclick="suiviDetail(${b.id})">Suivi</button>
@@ -525,7 +558,7 @@ function connectWS() {
     ws.onmessage = (ev) => {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if ((m.type === 'bon:maj' || m.type === 'bon:nouveau' || m.type === 'bon:annule') && S.page === 'suivi') loadSuivi();
-      if (m.type === 'live' && S.page === 'dashboard' && m.live) applyLive(m.live);
+      if (m.type === 'live' && S.page === 'dashboard' && m.live) applyLiveSingle(m.live);
     };
   } catch {}
 }
@@ -1057,11 +1090,20 @@ async function loadFactures() {
         <td>${money(f.montant_paye)}</td>
         <td class="${f.relicat > 0 ? 'neg' : 'pos'}">${money(f.relicat)}</td>
         <td><span class="badge ${s[1]}">${s[0]}</span></td>
-        <td class="row-actions"><button class="btn sec" onclick="imprimerFacture(${f.id})">Imprimer</button></td>
+        <td class="row-actions">
+          <button class="btn sec" onclick="imprimerFacture(${f.id})">Imprimer</button>
+          ${f.statut !== 'annulee' && S.user?.role === 'admin' ? `<button class="btn danger" onclick="annulerFacture(${f.id},'${esc(f.numero)}')">Annuler</button>` : ''}
+        </td>
       </tr>`; }).join('')}</table>` : '<div class="hint">Aucune facture émise.</div>';
   } catch (e) { toast(e.message, true); }
 }
 window.imprimerFacture = (id) => window.open(`/api/factures/${id}/imprimer?token=${encodeURIComponent(S.token)}`, '_blank');
+window.annulerFacture = async (id, numero) => {
+  if (!confirm(`Annuler la facture ${numero} ? Les écritures comptables seront inversées.`)) return;
+  try { await api('/factures/' + id + '/annuler', { method: 'PATCH' });
+    toast('Facture annulée'); loadFactures(); }
+  catch (e) { toast(e.message, true); }
+};
 window.imprimerBon = (id) => window.open(`/api/bons-commande/${id}/imprimer?token=${encodeURIComponent(S.token)}`, '_blank');
 
 /* ───────────── Relicat / Créances ───────────── */
@@ -1333,7 +1375,8 @@ async function pageRapports() {
       <button class="btn sec" id="rPrint">🖨 Imprimer</button></div>
     <div class="kpis" id="rKpis"></div>
     <h3>Répartition par produit</h3><div id="rProd"></div>
-    <h3 style="margin-top:16px">Répartition par client</h3><div id="rCli"></div></div>`;
+    <h3 style="margin-top:16px">Répartition par client</h3><div id="rCli"></div>
+    <h3 style="margin-top:16px">Répartition par pont bascule</h3><div id="rPont"></div></div>`;
   $('rGo').onclick = loadStats; $('rPrint').onclick = () => window.print();
   loadStats();
 }
@@ -1349,6 +1392,10 @@ async function loadStats() {
       : '<div class="hint">—</div>';
     $('rProd').innerHTML = tbl(s.parProduit);
     $('rCli').innerHTML = tbl(s.parClient);
+    $('rPont').innerHTML = (s.parPont && s.parPont.length) ? `<table>
+      <tr><th>Pont bascule</th><th>Bons</th><th>Total (t)</th></tr>
+      ${s.parPont.map(p => `<tr><td>${esc(p.pont)}</td><td>${p.nbBons}</td><td>${fmt(p.total)}</td></tr>`).join('')}
+      </table>` : '<div class="hint">—</div>';
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1424,16 +1471,29 @@ async function pageAdmin() {
   $('pageTitle').textContent = 'Administration mGlobal';
   const c = $('content');
   c.innerHTML = `
-    <div class="panel"><h3>Liaison du poste pont bascule</h3>
-      <div class="hint">Collez l'URL ci-dessous et la <b>clé de liaison</b> dans mGlobal
-        (Paramètres → 🌐 Accès distant → Lier à la plateforme cloud).</div>
+    <div class="panel"><h3>Ponts bascule (sites)</h3>
+      <div class="hint">Chaque pont bascule est identifié par un <b>nom</b> et une <b>clé de liaison</b> unique.
+        Rattachez-le à un distributeur pour organiser les pesées par espace.
+        Collez la clé dans mGlobal (Paramètres → 🌐 Accès distant).</div>
       <div style="margin:10px 0"><label>URL de la plateforme</label>
         <div class="keybox" id="platUrl"></div></div>
+      <div class="filters" style="margin-top:10px">
+        <span><label>Nom du pont</label><input id="siteNom" placeholder="Ex : Pont Entrée A"></span>
+        <span><label>Distributeur rattaché</label><select id="siteDistrib"><option value="">— Aucun —</option></select></span>
+        <button class="btn sec" id="siteAdd">Ajouter un pont</button>
+      </div>
       <div id="sites"></div></div>
     <div class="panel"><h3>Distributeurs (espaces)</h3>
       <div class="filters"><input id="dNom" placeholder="Nom du distributeur">
         <button class="btn sec" id="dAdd">Créer l'espace</button></div>
       <div id="dTable"><div class="hint">Chargement…</div></div></div>
+    <div class="panel"><h3>Mot de passe journalier (accès offline)</h3>
+      <div class="hint">Mot de passe temporaire (6 chiffres) permettant l'accès offline au poste pont bascule. Change automatiquement chaque jour.</div>
+      <div class="filters" style="margin-top:10px">
+        <span><label>Espace distributeur</label><select id="dpDistrib"></select></span>
+        <button class="btn sec" id="dpGen">Afficher le mot de passe du jour</button>
+        <span id="dpResult" style="font-size:24px;font-weight:800;color:#0f3d6e;letter-spacing:6px"></span>
+      </div></div>
     <div class="panel"><h3>Mon mot de passe (super-admin)</h3>
       <div class="hint">Modifiez le mot de passe du compte super-admin mGlobal.</div>
       <div class="filters" style="margin-top:10px">
@@ -1443,24 +1503,55 @@ async function pageAdmin() {
         <button class="btn sec" id="pwSave">Modifier</button></div></div>`;
   $('platUrl').textContent = location.origin;
   $('pwSave').onclick = changePassword;
+  // Mot de passe journalier : remplir la liste des distributeurs
+  api('/admin/distributeurs').then(ds => {
+    $('dpDistrib').innerHTML = ds.map(d => `<option value="${d.id}">${esc(d.nom)}</option>`).join('');
+  }).catch(() => {});
+  $('dpGen').onclick = async () => {
+    const did = $('dpDistrib').value;
+    if (!did) return toast('Sélectionnez un distributeur', true);
+    try {
+      const r = await api('/license/admin/daily-password/' + did);
+      $('dpResult').textContent = r.password;
+    } catch (e) { toast(e.message, true); }
+  };
   $('dAdd').onclick = async () => {
     try { await api('/admin/distributeurs', { method: 'POST', body: JSON.stringify({ nom: $('dNom').value }) });
-      toast('Espace créé'); $('dNom').value = ''; loadDistribs(); }
+      toast('Espace créé'); $('dNom').value = ''; loadDistribs(); loadSites(); }
     catch (e) { toast(e.message, true); }
+  };
+  $('siteAdd').onclick = async () => {
+    const nom = $('siteNom').value.trim();
+    if (!nom) return toast('Nom du pont bascule requis', true);
+    const did = $('siteDistrib').value || null;
+    try {
+      const r = await api('/admin/sites', { method: 'POST', body: JSON.stringify({ nom, distributeur_id: did ? Number(did) : null }) });
+      toast(`Pont créé — clé : ${r.site_key}`); $('siteNom').value = ''; loadSites();
+    } catch (e) { toast(e.message, true); }
   };
   loadSites(); loadDistribs();
 }
 async function loadSites() {
   try {
     const sites = await api('/admin/sites');
+    // Remplir le select distributeur pour le formulaire d'ajout
+    try {
+      const ds = await api('/admin/distributeurs');
+      const sel = $('siteDistrib');
+      if (sel) sel.innerHTML = '<option value="">— Aucun —</option>' +
+        ds.map(d => `<option value="${d.id}">${esc(d.nom)}</option>`).join('');
+    } catch {}
     $('sites').innerHTML = `<table>
-      <tr><th>Site</th><th>Clé de liaison</th><th>Dernière synchro</th><th></th></tr>
+      <tr><th>Pont bascule</th><th>Clé de liaison</th><th>Distributeur</th><th>Dernière synchro</th><th></th></tr>
       ${sites.map(s => `<tr><td>${esc(s.nom)}</td>
         <td><span class="keybox">${esc(s.site_key)}</span></td>
+        <td>${esc(s.distributeur_nom || '— non rattaché')}</td>
         <td>${esc(s.last_seen || 'jamais')}</td>
         <td class="row-actions">
-          <button class="btn sec" onclick="dlConfig('${esc(s.site_key)}')">⬇ Config auto (.json)</button>
-          <button class="btn sec" onclick="rotateKey(${s.id})">Régénérer</button></td></tr>`).join('')}
+          <button class="btn sec" onclick="dlConfig('${esc(s.site_key)}')">⬇ Config</button>
+          <button class="btn sec" onclick="editSite(${s.id},'${esc(s.nom)}',${s.distributeur_id || 'null'})">Modifier</button>
+          <button class="btn sec" onclick="rotateKey(${s.id})">Régénérer clé</button>
+          <button class="btn danger" onclick="delSite(${s.id})">Suppr.</button></td></tr>`).join('')}
       </table>`;
   } catch (e) { toast(e.message, true); }
 }
@@ -1470,6 +1561,22 @@ window.dlConfig = (siteKey) => {
 window.rotateKey = async (id) => {
   if (!confirm('Régénérer la clé ? L\'ancienne ne fonctionnera plus.')) return;
   try { await api('/admin/sites/' + id + '/rotate', { method: 'POST' }); toast('Clé régénérée'); loadSites(); }
+  catch (e) { toast(e.message, true); }
+};
+window.editSite = async (id, nom, did) => {
+  const newNom = prompt('Nom du pont bascule :', nom);
+  if (newNom === null) return;
+  const newDid = prompt('ID du distributeur rattaché (laisser vide pour aucun) :', did || '');
+  if (newDid === null) return;
+  try {
+    await api('/admin/sites/' + id, { method: 'PATCH', body: JSON.stringify({
+      nom: newNom, distributeur_id: newDid ? Number(newDid) : null }) });
+    toast('Pont mis à jour'); loadSites();
+  } catch (e) { toast(e.message, true); }
+};
+window.delSite = async (id) => {
+  if (!confirm('Supprimer ce pont bascule ? Les pesées associées seront conservées.')) return;
+  try { await api('/admin/sites/' + id, { method: 'DELETE' }); toast('Pont supprimé'); loadSites(); }
   catch (e) { toast(e.message, true); }
 };
 async function loadDistribs() {
@@ -1484,8 +1591,10 @@ async function loadDistribs() {
         return `<tr><td>${esc(d.nom)}</td><td>${esc(d.slug)}</td><td>${d.nbUsers}</td><td>${d.nbBons}</td>
           <td>${etat}</td>
           <td class="row-actions">
+            <button class="btn sec" onclick="renameDistrib(${d.id},'${esc(d.nom)}')">Renommer</button>
             <button class="btn sec" onclick="setDistrib(${d.id},'actif',${d.actif ? 0 : 1})">${d.actif ? 'Désactiver' : 'Réactiver'}</button>
             <button class="btn ${d.gele ? 'sec' : 'danger'}" onclick="setDistrib(${d.id},'gele',${d.gele ? 0 : 1})">${d.gele ? 'Dégeler' : 'Geler (bloquer)'}</button>
+            <button class="btn danger" onclick="delDistrib(${d.id},'${esc(d.nom)}')">Supprimer</button>
           </td></tr>`;
       }).join('')}
       </table>`;
@@ -1496,6 +1605,19 @@ window.setDistrib = async (id, champ, val) => {
   if (!confirm(`Confirmer : ${labels[champ]} cet espace distributeur ?`)) return;
   try { await api('/admin/distributeurs/' + id, { method: 'PATCH', body: JSON.stringify({ [champ]: val }) });
     toast('Distributeur mis à jour'); loadDistribs(); }
+  catch (e) { toast(e.message, true); }
+};
+window.renameDistrib = async (id, nom) => {
+  const newNom = prompt('Nouveau nom du distributeur :', nom);
+  if (!newNom || newNom === nom) return;
+  try { await api('/admin/distributeurs/' + id, { method: 'PATCH', body: JSON.stringify({ nom: newNom }) });
+    toast('Distributeur renommé'); loadDistribs(); loadSites(); }
+  catch (e) { toast(e.message, true); }
+};
+window.delDistrib = async (id, nom) => {
+  if (!confirm(`ATTENTION : Supprimer le distributeur "${nom}" et TOUTES ses données (utilisateurs, bons, factures, etc.) ? Cette action est IRRÉVERSIBLE.`)) return;
+  try { await api('/admin/distributeurs/' + id, { method: 'DELETE' });
+    toast('Distributeur supprimé'); loadDistribs(); loadSites(); }
   catch (e) { toast(e.message, true); }
 };
 
@@ -1646,6 +1768,104 @@ async function enregistrerLivraisonEF() {
     pageEspaceFournisseur();
   } catch (e) { toast(e.message, true); }
 }
+
+/* ───────────── Licences & OTA (super-admin) ───────────── */
+async function pageLicences() {
+  $('pageTitle').textContent = 'Licences & Mises à jour OTA';
+  const c = $('content');
+  c.innerHTML = `
+    <div class="panel"><h3>🛡 Licences anti-clonage</h3>
+      <div class="hint">Chaque poste pont bascule est lié à une licence unique. Le hardware_id empêche la copie du logiciel sur un autre ordinateur.</div>
+      <div id="licTable"><div class="hint">Chargement…</div></div></div>
+    <div class="panel"><h3>📦 Mises à jour OTA</h3>
+      <div class="hint">Publiez les nouvelles versions du logiciel pont bascule. Les postes vérifieront automatiquement les mises à jour.</div>
+      <div class="filters" style="margin-top:10px">
+        <input id="otaVer" placeholder="Version (ex: 2.1.0)">
+        <input id="otaUrl" placeholder="URL de téléchargement">
+        <input id="otaLog" placeholder="Notes de version">
+        <label><input type="checkbox" id="otaMand"> Obligatoire</label>
+        <button class="btn sec" id="otaAdd">Publier</button>
+      </div>
+      <div id="otaTable"><div class="hint">Chargement…</div></div></div>`;
+  $('otaAdd').onclick = async () => {
+    try {
+      await api('/license/admin/ota', { method: 'POST', body: JSON.stringify({
+        version: $('otaVer').value, url: $('otaUrl').value,
+        changelog: $('otaLog').value, mandatory: $('otaMand').checked
+      })});
+      toast('Mise à jour publiée'); $('otaVer').value = $('otaUrl').value = $('otaLog').value = '';
+      loadOta();
+    } catch (e) { toast(e.message, true); }
+  };
+  loadLicences(); loadOta();
+}
+async function loadLicences() {
+  try {
+    const lics = await api('/license/admin/all');
+    $('licTable').innerHTML = lics.length ? `<table>
+      <tr><th>Site</th><th>Clé licence</th><th>Statut</th><th>Hardware ID</th><th>Expiration</th><th>Activée le</th><th></th></tr>
+      ${lics.map(l => {
+        const expired = l.expires_at && new Date(l.expires_at) < new Date();
+        const st = l.status === 'REVOKED' ? 'off' : (expired ? 'off' : 'on');
+        const label = l.status === 'REVOKED' ? 'Révoquée' : (expired ? 'Expirée' : 'Active');
+        return `<tr>
+          <td>${esc(l.site_nom)}</td>
+          <td><span class="keybox" style="font-size:11px">${esc(l.license_key)}</span></td>
+          <td><span class="tag ${st}">${label}</span></td>
+          <td style="font-size:11px">${esc(l.hardware_id || '— non activée')}</td>
+          <td>${esc(l.expires_at || 'Illimitée')}</td>
+          <td>${esc((l.activated_at || '').slice(0, 16) || '—')}</td>
+          <td class="row-actions">
+            ${l.status === 'ACTIVE' ? `<button class="btn danger" onclick="licAction(${l.id},'REVOKED')">Révoquer</button>` :
+              `<button class="btn sec" onclick="licAction(${l.id},'ACTIVE')">Réactiver</button>`}
+            ${l.hardware_id ? `<button class="btn sec" onclick="licResetHw(${l.id})">Reset HW</button>` : ''}
+            <button class="btn sec" onclick="licExpire(${l.id})">Prolonger</button>
+          </td></tr>`;
+      }).join('')}</table>`
+      : '<div class="hint">Aucune licence enregistrée.</div>';
+  } catch (e) { toast(e.message, true); }
+}
+window.licAction = async (id, status) => {
+  const label = status === 'REVOKED' ? 'révoquer' : 'réactiver';
+  if (!confirm(`Confirmer : ${label} cette licence ?`)) return;
+  try { await api('/license/admin/' + id, { method: 'PATCH', body: JSON.stringify({ status }) });
+    toast('Licence mise à jour'); loadLicences(); }
+  catch (e) { toast(e.message, true); }
+};
+window.licResetHw = async (id) => {
+  if (!confirm('Réinitialiser le hardware ID ? Le poste devra se réactiver.')) return;
+  try { await api('/license/admin/' + id, { method: 'PATCH', body: JSON.stringify({ reset_hardware: true }) });
+    toast('Hardware ID réinitialisé'); loadLicences(); }
+  catch (e) { toast(e.message, true); }
+};
+window.licExpire = async (id) => {
+  const d = prompt('Nouvelle date d\'expiration (AAAA-MM-JJ) :\n(Laissez vide pour illimitée)');
+  if (d === null) return;
+  try { await api('/license/admin/' + id, { method: 'PATCH', body: JSON.stringify({ expires_at: d || null }) });
+    toast('Expiration mise à jour'); loadLicences(); }
+  catch (e) { toast(e.message, true); }
+};
+async function loadOta() {
+  try {
+    const rows = await api('/license/admin/ota');
+    $('otaTable').innerHTML = rows.length ? `<table>
+      <tr><th>Version</th><th>URL</th><th>Notes</th><th>Obligatoire</th><th>Publiée le</th><th></th></tr>
+      ${rows.map(o => `<tr>
+        <td><b>${esc(o.version)}</b></td>
+        <td style="font-size:11px">${esc(o.url || '—')}</td>
+        <td>${esc(o.changelog || '')}</td>
+        <td>${o.mandatory ? '<span class="tag off">Oui</span>' : 'Non'}</td>
+        <td>${esc((o.created_at || '').slice(0, 16))}</td>
+        <td class="row-actions"><button class="btn danger" onclick="delOta(${o.id})">Suppr.</button></td>
+      </tr>`).join('')}</table>`
+      : '<div class="hint">Aucune mise à jour publiée.</div>';
+  } catch (e) { toast(e.message, true); }
+}
+window.delOta = async (id) => {
+  if (!confirm('Supprimer cette mise à jour ?')) return;
+  try { await api('/license/admin/ota/' + id, { method: 'DELETE' }); loadOta(); }
+  catch (e) { toast(e.message, true); }
+};
 
 /* ───────────── Démarrage ───────────── */
 (async function init() {

@@ -4,13 +4,16 @@ import { requireAuth, denySuperadmin, denyFournisseur } from '../lib/auth.js';
 
 const r = Router();
 
-// Poids en temps réel (public aux utilisateurs connectés — commun à tous)
+// Poids en temps réel — multi-pont : retourne l'état de tous les ponts.
 r.get('/live', requireAuth, (req, res) => {
-  const l = db.prepare(`SELECT * FROM live WHERE id = 1`).get();
-  res.json({
+  const rows = db.prepare(`SELECT l.*, s.distributeur_id FROM live l
+    LEFT JOIN sites s ON s.id = l.site_id ORDER BY l.site_id`).all();
+  const ponts = rows.map(l => ({
+    siteId: l.site_id, siteNom: l.site_nom, distributeurId: l.distributeur_id,
     connected: !!l.connected, stable: !!l.stable,
     kg: l.kg, valeur: l.valeur, unite: l.unite, ts: l.ts
-  });
+  }));
+  res.json({ ponts });
 });
 
 // Dashboard mGlobal COMMUN (mêmes chiffres globaux pour les distributeurs).
@@ -37,11 +40,16 @@ r.get('/global', requireAuth, denySuperadmin, denyFournisseur, (req, res) => {
     FROM sorties WHERE substr(date_sortie,1,4)=?
     GROUP BY mois ORDER BY mois`).all(year);
 
+  const parPont = db.prepare(`
+    SELECT s.site_nom AS pont, COUNT(*) AS nbBons, ROUND(SUM(s.poids_net),3) AS totalTonnes
+    FROM sorties s WHERE s.site_nom IS NOT NULL
+    GROUP BY s.site_nom ORDER BY totalTonnes DESC`).all();
+
   res.json({
     jour: { nbCamions: jour.nb, totalTonnes: round(jour.t) },
     mois: { nbCamions: mois.nb, totalTonnes: round(mois.t) },
     annee: { nbCamions: annee.nb, totalTonnes: round(annee.t) },
-    parDistributeur, parMois
+    parDistributeur, parMois, parPont
   });
 });
 

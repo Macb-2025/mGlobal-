@@ -71,6 +71,10 @@ r.get('/stats', denySuperadmin, denyFournisseur, (req, res) => {
     SELECT client, ROUND(SUM(poids_net),3) total FROM sorties
     WHERE date_sortie BETWEEN @from AND @to ${where}
     GROUP BY client ORDER BY total DESC`).all({ from, to, did });
+  const parPont = db.prepare(`
+    SELECT site_nom AS pont, COUNT(*) AS nbBons, ROUND(SUM(poids_net),3) AS total
+    FROM sorties WHERE date_sortie BETWEEN @from AND @to ${where} AND site_nom IS NOT NULL
+    GROUP BY site_nom ORDER BY total DESC`).all({ from, to, did });
   res.json({
     date,
     nbCamions: agg.nbCamions,
@@ -78,7 +82,8 @@ r.get('/stats', denySuperadmin, denyFournisseur, (req, res) => {
     moyenneTonnes: round(agg.moyenneTonnes, 3),
     chiffreAffaires: round(agg.chiffreAffaires, 2),
     parProduit: Object.fromEntries(parProduit.filter(x => x.produit).map(x => [x.produit, x.total])),
-    parClient: Object.fromEntries(parClient.filter(x => x.client).map(x => [x.client, x.total]))
+    parClient: Object.fromEntries(parClient.filter(x => x.client).map(x => [x.client, x.total])),
+    parPont
   });
 });
 
@@ -114,7 +119,8 @@ function mapSortie(s) {
     poidsNet: s.poids_net, prixUnitaire: s.prix_unitaire, montantTotal: s.montant_total,
     dateSortie: s.date_sortie, operateur: s.operateur, destination: s.destination,
     numeroBon: s.numero_bon, typeTransaction: s.type_transaction, imprime: !!s.imprime,
-    distributeur: s.distributeur_nom
+    distributeur: s.distributeur_nom,
+    siteId: s.site_id, siteNom: s.site_nom
   };
 }
 function mapEntree(e) {
@@ -122,7 +128,8 @@ function mapEntree(e) {
     id: e.id, sourceId: e.source_id, numeroTicket: e.numero_ticket,
     immatriculation: e.immatriculation, chauffeur: e.chauffeur, client: e.client,
     produit: e.produit, poidsEntree: e.poids_entree, dateEntree: e.date_entree,
-    operateur: e.operateur, origine: e.origine, distributeur: e.distributeur
+    operateur: e.operateur, origine: e.origine, distributeur: e.distributeur,
+    siteId: e.site_id, siteNom: e.site_nom
   };
 }
 
@@ -147,7 +154,7 @@ td{padding:7px 4px;border-bottom:1px solid #ddd;font-size:13px;}
 .foot{text-align:center;color:#999;font-size:11px;margin-top:26px;}
 @media print{button{display:none;}}
 </style></head><body>
-<div class="head"><div class="title">⚖ mGlobal Pont Bascule</div>
+<div class="head"><div class="title">⚖ mGlobal Pont Bascule${s.site_nom ? ' — ' + esc(s.site_nom) : ''}</div>
 <div style="text-align:right"><div style="font-size:18px;font-weight:800">BON DE PESAGE</div>
 <div>N° ${esc(s.numero_ticket)}</div><div style="color:#666">${esc(s.date_sortie)}</div></div></div>
 <table>

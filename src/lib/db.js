@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS print_jobs (
 );
 
 CREATE TABLE IF NOT EXISTS live (
-  id        INTEGER PRIMARY KEY CHECK (id = 1),
+  site_id   INTEGER PRIMARY KEY,
+  site_nom  TEXT,
   connected INTEGER DEFAULT 0,
   stable    INTEGER DEFAULT 0,
   kg        REAL DEFAULT 0,
@@ -299,8 +300,34 @@ CREATE TABLE IF NOT EXISTS mouvements_stock (
 CREATE INDEX IF NOT EXISTS idx_mvt_dist ON mouvements_stock(distributeur_id);
 CREATE INDEX IF NOT EXISTS idx_mvt_prod ON mouvements_stock(produit_id);
 
-INSERT OR IGNORE INTO live (id, connected, stable, kg, valeur, unite, ts)
-VALUES (1, 0, 0, 0, 0, 't', datetime('now'));
+-- Licences anti-clonage : chaque site peut recevoir une licence liée à un
+-- identifiant matériel unique (hardware_id) empêchant la copie du logiciel.
+CREATE TABLE IF NOT EXISTS licences (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  site_id         INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+  license_key     TEXT NOT NULL UNIQUE,
+  hardware_id     TEXT,                          -- empreinte matérielle du poste
+  status          TEXT NOT NULL DEFAULT 'ACTIVE', -- ACTIVE|EXPIRED|REVOKED
+  expires_at      TEXT,                          -- date d'expiration (NULL = illimitée)
+  activated_at    TEXT,
+  note            TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lic_site ON licences(site_id);
+
+-- Mises à jour OTA (over-the-air) pour les postes pont bascule.
+CREATE TABLE IF NOT EXISTS ota_updates (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  version         TEXT NOT NULL,
+  filename        TEXT,
+  url             TEXT,
+  changelog       TEXT,
+  mandatory       INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Compatibilité : l'ancienne live single-row est remplacée par multi-pont.
+-- Les données live sont créées/mises à jour dynamiquement par l'ingestion.
 `);
 
 // ── Migrations légères : ajoute les colonnes manquantes aux bases existantes ──
@@ -311,7 +338,32 @@ function addColumn(table, col, ddl) {
     console.log(`[migration] ${table}.${col} ajouté`);
   }
 }
+// Migration : convertir l'ancienne table live (single-row id=1) vers multi-pont (site_id).
+try {
+  const liveCols = db.prepare(`PRAGMA table_info(live)`).all();
+  if (liveCols.some(c => c.name === 'id') && !liveCols.some(c => c.name === 'site_id')) {
+    db.exec(`DROP TABLE IF EXISTS live`);
+    db.exec(`CREATE TABLE live (
+      site_id INTEGER PRIMARY KEY, site_nom TEXT,
+      connected INTEGER DEFAULT 0, stable INTEGER DEFAULT 0,
+      kg REAL DEFAULT 0, valeur REAL DEFAULT 0, unite TEXT DEFAULT 't', ts TEXT
+    )`);
+    console.log('[migration] Table live migrée vers multi-pont');
+  }
+} catch {}
+
 addColumn('distributeurs', 'gele', 'gele INTEGER NOT NULL DEFAULT 0');
+
+// Multi-pont bascule : lier chaque site à un distributeur.
+addColumn('sites', 'distributeur_id', 'distributeur_id INTEGER REFERENCES distributeurs(id) ON DELETE SET NULL');
+
+// Traçabilité pont : quel pont a traité chaque pesée.
+addColumn('sorties', 'site_id', 'site_id INTEGER');
+addColumn('sorties', 'site_nom', 'site_nom TEXT');
+addColumn('entrees', 'site_id', 'site_id INTEGER');
+addColumn('entrees', 'site_nom', 'site_nom TEXT');
+addColumn('bons_commande', 'site_id', 'site_id INTEGER');
+addColumn('bons_commande', 'site_nom', 'site_nom TEXT');
 // Compte fournisseur (rôle 'fournisseur') rattaché à une entité fournisseur.
 addColumn('users', 'fournisseur_id', 'fournisseur_id INTEGER REFERENCES fournisseurs(id) ON DELETE CASCADE');
 addColumn('bons_commande', 'numero', 'numero INTEGER');
@@ -331,6 +383,9 @@ addColumn('distributeurs', 'devise',   "devise TEXT NOT NULL DEFAULT 'FCFA'");
 addColumn('distributeurs', 'tva_defaut','tva_defaut REAL NOT NULL DEFAULT 18');
 addColumn('distributeurs', 'pied_facture', 'pied_facture TEXT');
 addColumn('distributeurs', 'logo', 'logo TEXT'); // chemin du logo (impression factures/bons)
+
+// Mot de passe journalier pour accès offline (secret par distributeur).
+addColumn('distributeurs', 'daily_password_secret', "daily_password_secret TEXT");
 
 // Vente en gros : facture générée automatiquement à l'achat (lien + état facturé).
 addColumn('commandes_gros', 'facture_id', 'facture_id INTEGER');
@@ -414,6 +469,15 @@ function seed() {
     const sk = process.env.SITE_KEY || newKey();
     db.prepare(`INSERT INTO sites (nom, site_key) VALUES (?, ?)`).run('Pont Bascule Principal', sk);
     console.log(`[seed] Site créé. CLÉ DE LIAISON (à coller dans mGlobal) : ${sk}`);
+  }
+  // Licence par défaut pour chaque site qui n'en a pas encore.
+  const sitesWithoutLicense = db.prepare(`SELECT s.id FROM sites s
+    LEFT JOIN licences l ON l.site_id = s.id WHERE l.id IS NULL`).all();
+  for (const s of sitesWithoutLicense) {
+    const lk = 'LIC-' + newKey();
+    db.prepare(`INSERT INTO licences (site_id, license_key, status) VALUES (?, ?, 'ACTIVE')`)
+      .run(s.id, lk);
+    console.log(`[seed] Licence créée pour site #${s.id} : ${lk}`);
   }
 }
 seed();

@@ -15,6 +15,7 @@ import ingestRouter from './routes/ingest.js';
 import modulesRouter from './routes/modules.js';
 import portailRouter from './routes/portail.js';
 import espaceFournisseurRouter from './routes/espaceFournisseur.js';
+import licenseRouter from './routes/license.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -37,6 +38,7 @@ app.use('/api/ingest', ingestRouter);
 app.use('/api', portailRouter);   // portails publics (client / fournisseur) — sans auth
 app.use('/api/espace-fournisseur', espaceFournisseurRouter); // espace fournisseur authentifié (compte super-admin)
 app.use('/api', dataRouter);      // pesées, rapports, impression (auth JWT)
+app.use('/api/license', licenseRouter); // licences anti-clonage + OTA + mot de passe journalier
 app.use('/api', modulesRouter);   // modules métier (auth JWT + multi-tenant)
 
 // Gestionnaire d'erreurs JSON
