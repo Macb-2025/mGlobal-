@@ -8,6 +8,7 @@ import { initRealtime } from './lib/realtime.js';
 
 import authRouter from './routes/auth.js';
 import adminRouter from './routes/admin.js';
+import proprietaireRouter from './routes/proprietaire.js';
 import dashboardRouter from './routes/dashboard.js';
 import dataRouter from './routes/data.js';
 import bonsRouter from './routes/bons.js';
@@ -31,6 +32,7 @@ app.get('/api/health', (_req, res) => res.json({ ok: true, ts: new Date().toISOS
 // APIs applicatives
 app.use('/api/auth', authRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/proprietaire', proprietaireRouter); // espace central propriétaire (hub)
 app.use('/api/dashboard', dashboardRouter);
 app.use('/api/bons-commande', bonsRouter);
 app.use('/api/ingest', ingestRouter);

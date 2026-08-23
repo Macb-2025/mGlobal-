@@ -50,18 +50,29 @@ function logout() {
   $('app').classList.add('hidden'); $('login').classList.remove('hidden');
 }
 
-const ROLE_LABEL = { superadmin: 'Super-admin mGlobal', admin: 'Administrateur',
-  superviseur: 'Superviseur', comptable: 'Comptable', assistante: 'Assistante', operateur: 'Opérateur',
+const ROLE_LABEL = { superadmin: 'Super-admin mGlobal', proprietaire: 'Propriétaire',
+  admin: 'Administrateur', superviseur: 'Superviseur', comptable: 'Comptable',
+  assistante: 'Assistante', vendeur: 'Vendeur', stockiste: 'Stockiste', operateur: 'Opérateur',
   fournisseur: 'Fournisseur' };
 
+const NATURE_LABEL = { habillement: 'Habillement', epicerie: 'Épicerie', depot: 'Dépôt', autre: 'Autre' };
+
 function menuFor(role) {
-  // Super-admin : administration uniquement (comptes + distributeurs), aucun accès
-  // aux données métier des distributeurs.
+  // Super-admin : administration (propriétaires, comptes, distributeurs), aucun accès
+  // aux données métier des boutiques.
   if (role === 'superadmin') {
     return [
       { id: 'admin', label: '⚙ Administration' },
+      { id: 'proprietaires', label: '🏢 Propriétaires' },
       { id: 'users', label: '🔑 Création de comptes' },
       { id: 'fournisseursComptes', label: '🚚 Espaces fournisseurs' }
+    ];
+  }
+  // Propriétaire : espace central (hub) — ses boutiques + RH centralisée.
+  if (role === 'proprietaire') {
+    return [
+      { id: 'proprietaireBoutiques', label: '🏬 Mes boutiques' },
+      { id: 'proprietaireCollabs', label: '👥 Collaborateurs (RH)' }
     ];
   }
   // Fournisseur : son espace dédié (solde, livraisons au distributeur, historique).
@@ -96,6 +107,14 @@ function menuFor(role) {
     return [M.dashboard, M.suivi, M.clients, M.fournisseurs, M.stock, M.gros,
       M.facturation, M.relicat, M.recherche, M.compta, M.rapports];
   }
+  // Vendeur : vente de terrain — pas d'accès à la comptabilité globale.
+  if (role === 'vendeur') {
+    return [M.dashboard, M.suivi, M.bons, M.clients, M.facturation, M.relicat, M.recherche];
+  }
+  // Stockiste : gestion des marchandises (stock, ventes en gros, fournisseurs).
+  if (role === 'stockiste') {
+    return [M.dashboard, M.suivi, M.stock, M.gros, M.fournisseurs, M.recherche];
+  }
   // Assistante : saisie opérationnelle (bons, clients, fournisseurs, stock, facturation).
   if (role === 'assistante') {
     return [M.dashboard, M.suivi, M.bons, M.clients, M.fournisseurs, M.stock, M.gros,
@@ -113,7 +132,9 @@ function menuFor(role) {
 function enterApp() {
   $('login').classList.add('hidden'); $('app').classList.remove('hidden');
   const u = S.user;
-  $('spaceName').textContent = u.distributeur ? u.distributeur.nom : 'Vue globale mGlobal';
+  $('spaceName').textContent = u.distributeur ? u.distributeur.nom
+    : u.proprietaire ? u.proprietaire.nom + ' (réseau)'
+    : 'Vue globale mGlobal';
   $('who').innerHTML = `<b>${esc(u.fullName || u.username)}</b><br>${ROLE_LABEL[u.role] || u.role}`;
   const nav = $('nav'); nav.innerHTML = '';
   for (const m of menuFor(u.role)) {
@@ -124,6 +145,7 @@ function enterApp() {
   S.history = [];
   const back = $('btnBack'); if (back) back.onclick = goBack;
   const accueil = u.role === 'superadmin' ? 'admin'
+    : u.role === 'proprietaire' ? 'proprietaireBoutiques'
     : u.role === 'fournisseur' ? 'espaceFournisseur' : 'dashboard';
   go(accueil);
   connectWS();
@@ -142,7 +164,9 @@ function go(page, fromBack = false) {
      facturation: pageFacturation, relicat: pageRelicat, recherche: pageRecherche,
      compta: pageCompta, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
      parametres: pageParametres, fournisseursComptes: pageFournisseursComptes,
-     espaceFournisseur: pageEspaceFournisseur }[page] || pageDashboard)();
+     espaceFournisseur: pageEspaceFournisseur, proprietaires: pageProprietaires,
+     proprietaireBoutiques: pageProprietaireBoutiques, proprietaireCollabs: pageProprietaireCollabs
+   }[page] || pageDashboard)();
 }
 function goBack() {
   const prev = S.history.pop();
@@ -1370,6 +1394,8 @@ async function pageUsers() {
       <span><label>Nom complet</label><input id="uFull" placeholder="Nom"></span>
       <span><label>Mot de passe</label><input id="uPass" type="text" placeholder="min 6 car."></span>
       <span><label>Rôle</label><select id="uRole">
+        <option value="vendeur">Vendeur</option>
+        <option value="stockiste">Stockiste</option>
         <option value="comptable">Comptable</option>
         <option value="assistante">Assistante</option>
         <option value="superviseur">Superviseur</option>
@@ -1430,9 +1456,17 @@ async function pageAdmin() {
       <div style="margin:10px 0"><label>URL de la plateforme</label>
         <div class="keybox" id="platUrl"></div></div>
       <div id="sites"></div></div>
-    <div class="panel"><h3>Distributeurs (espaces)</h3>
-      <div class="filters"><input id="dNom" placeholder="Nom du distributeur">
-        <button class="btn sec" id="dAdd">Créer l'espace</button></div>
+    <div class="panel"><h3>Boutiques (espaces)</h3>
+      <div class="hint">Une boutique appartient à un propriétaire (dans la limite de son quota).</div>
+      <div class="filters" style="margin-top:10px">
+        <span><label>Propriétaire</label><select id="dProp"></select></span>
+        <span><label>Nom de la boutique</label><input id="dNom" placeholder="Ex : Boutique Centre-ville"></span>
+        <span><label>Nature</label><select id="dNature">
+          <option value="habillement">Habillement</option>
+          <option value="epicerie">Épicerie</option>
+          <option value="depot">Dépôt</option>
+          <option value="autre" selected>Autre</option></select></span>
+        <button class="btn sec" id="dAdd">Créer la boutique</button></div>
       <div id="dTable"><div class="hint">Chargement…</div></div></div>
     <div class="panel"><h3>Mon mot de passe (super-admin)</h3>
       <div class="hint">Modifiez le mot de passe du compte super-admin mGlobal.</div>
@@ -1444,11 +1478,22 @@ async function pageAdmin() {
   $('platUrl').textContent = location.origin;
   $('pwSave').onclick = changePassword;
   $('dAdd').onclick = async () => {
-    try { await api('/admin/distributeurs', { method: 'POST', body: JSON.stringify({ nom: $('dNom').value }) });
-      toast('Espace créé'); $('dNom').value = ''; loadDistribs(); }
-    catch (e) { toast(e.message, true); }
+    if (!$('dProp').value) return toast('Créez d\'abord un propriétaire', true);
+    try {
+      await api('/admin/distributeurs', { method: 'POST', body: JSON.stringify({
+        nom: $('dNom').value, proprietaireId: Number($('dProp').value), nature: $('dNature').value }) });
+      toast('Boutique créée'); $('dNom').value = ''; loadDistribs();
+    } catch (e) { toast(e.message, true); }
   };
-  loadSites(); loadDistribs();
+  loadSites(); loadDistribProps(); loadDistribs();
+}
+async function loadDistribProps() {
+  try {
+    const ps = await api('/admin/proprietaires');
+    $('dProp').innerHTML = ps.length
+      ? ps.map(p => `<option value="${p.id}">${esc(p.nom)} (${p.nbBoutiques}/${p.quota_boutiques})</option>`).join('')
+      : '<option value="">— aucun propriétaire —</option>';
+  } catch (e) { toast(e.message, true); }
 }
 async function loadSites() {
   try {
@@ -1476,12 +1521,13 @@ async function loadDistribs() {
   try {
     const ds = await api('/admin/distributeurs');
     $('dTable').innerHTML = `<table>
-      <tr><th>Distributeur</th><th>Slug</th><th>Comptes</th><th>Bons</th><th>État</th><th>Contrôle</th></tr>
+      <tr><th>Boutique</th><th>Propriétaire</th><th>Nature</th><th>Comptes</th><th>Bons</th><th>État</th><th>Contrôle</th></tr>
       ${ds.map(d => {
         const etat = d.gele ? '<span class="tag off">Gelé (bloqué)</span>'
           : d.actif ? '<span class="tag on">Actif</span>'
           : '<span class="tag off">Désactivé</span>';
-        return `<tr><td>${esc(d.nom)}</td><td>${esc(d.slug)}</td><td>${d.nbUsers}</td><td>${d.nbBons}</td>
+        return `<tr><td>${esc(d.nom)}</td><td>${esc(d.proprietaire_nom || '—')}</td>
+          <td>${esc(NATURE_LABEL[d.nature] || d.nature || '—')}</td><td>${d.nbUsers}</td><td>${d.nbBons}</td>
           <td>${etat}</td>
           <td class="row-actions">
             <button class="btn sec" onclick="setDistrib(${d.id},'actif',${d.actif ? 0 : 1})">${d.actif ? 'Désactiver' : 'Réactiver'}</button>
@@ -1646,6 +1692,204 @@ async function enregistrerLivraisonEF() {
     pageEspaceFournisseur();
   } catch (e) { toast(e.message, true); }
 }
+
+/* ───────────── Propriétaires (super-admin) ───────────── */
+async function pageProprietaires() {
+  $('pageTitle').textContent = 'Propriétaires (réseaux)';
+  const c = $('content');
+  c.innerHTML = `<div class="panel"><h3>Créer un propriétaire</h3>
+    <div class="hint">Le propriétaire se connecte sur la page de connexion habituelle. Il pourra créer
+      ses sous-boutiques dans la limite du quota défini ici.</div>
+    <div class="filters" style="margin-top:10px">
+      <span><label>Nom / réseau</label><input id="pNom" placeholder="Ex : Groupe Diallo"></span>
+      <span><label>Téléphone</label><input id="pTel" placeholder="Optionnel"></span>
+      <span><label>E-mail</label><input id="pMail" placeholder="Optionnel"></span>
+      <span><label>Quota boutiques</label><input id="pQuota" type="number" min="0" value="1" style="max-width:110px"></span>
+      <span><label>Identifiant</label><input id="pUser" placeholder="login"></span>
+      <span><label>Mot de passe</label><input id="pPass" type="text" placeholder="min 6 car."></span>
+      <button class="btn sec" id="pAdd">Créer le propriétaire</button>
+    </div></div>
+    <div class="panel"><h3>Propriétaires</h3><div id="pTable"><div class="hint">Chargement…</div></div></div>`;
+  $('pAdd').onclick = addProprietaire;
+  loadProprietaires();
+}
+async function loadProprietaires() {
+  try {
+    const rows = await api('/admin/proprietaires');
+    $('pTable').innerHTML = rows.length ? `<table>
+      <tr><th>Nom</th><th>Identifiant</th><th>Contact</th><th>Boutiques</th><th>Quota</th><th>État</th><th>Contrôle</th></tr>
+      ${rows.map(p => `<tr>
+        <td>${esc(p.nom)}</td><td>${esc(p.username || '—')}</td>
+        <td>${esc(p.telephone || '')}${p.telephone && p.email ? ' · ' : ''}${esc(p.email || '')}</td>
+        <td>${p.nbBoutiques}</td>
+        <td><input type="number" min="0" value="${p.quota_boutiques}" style="max-width:80px" id="q_${p.id}">
+          <button class="btn sec" onclick="setQuota(${p.id})">OK</button></td>
+        <td><span class="tag ${p.actif ? 'on' : 'off'}">${p.actif ? 'Actif' : 'Désactivé'}</span></td>
+        <td class="row-actions">
+          <button class="btn ${p.actif ? 'danger' : 'sec'}" onclick="setPropActif(${p.id},${p.actif ? 0 : 1})">${p.actif ? 'Désactiver (cascade)' : 'Réactiver'}</button>
+          <button class="btn sec" onclick="resetPropPass(${p.id})">Mot de passe</button>
+        </td></tr>`).join('')}</table>`
+      : '<div class="hint">Aucun propriétaire pour l\'instant.</div>';
+  } catch (e) { toast(e.message, true); }
+}
+async function addProprietaire() {
+  const body = { nom: $('pNom').value, telephone: $('pTel').value, email: $('pMail').value,
+    quota: Number($('pQuota').value), username: $('pUser').value, password: $('pPass').value };
+  try {
+    await api('/admin/proprietaires', { method: 'POST', body: JSON.stringify(body) });
+    toast('Propriétaire créé');
+    $('pNom').value = $('pTel').value = $('pMail').value = $('pUser').value = $('pPass').value = '';
+    $('pQuota').value = 1; loadProprietaires();
+  } catch (e) { toast(e.message, true); }
+}
+window.setQuota = async (id) => {
+  try { await api('/admin/proprietaires/' + id, { method: 'PATCH', body: JSON.stringify({ quota: Number($('q_' + id).value) }) });
+    toast('Quota mis à jour'); loadProprietaires(); }
+  catch (e) { toast(e.message, true); }
+};
+window.setPropActif = async (id, actif) => {
+  if (!confirm(actif ? 'Réactiver cet espace propriétaire ?' : 'Désactiver cet espace propriétaire ? Toutes ses boutiques seront bloquées (cascade).')) return;
+  try { await api('/admin/proprietaires/' + id, { method: 'PATCH', body: JSON.stringify({ actif }) });
+    toast('Propriétaire mis à jour'); loadProprietaires(); }
+  catch (e) { toast(e.message, true); }
+};
+window.resetPropPass = async (id) => {
+  const password = prompt('Nouveau mot de passe (min. 6 caractères) :');
+  if (!password) return;
+  try { await api('/admin/proprietaires/' + id, { method: 'PATCH', body: JSON.stringify({ password }) });
+    toast('Mot de passe modifié'); }
+  catch (e) { toast(e.message, true); }
+};
+
+/* ───────────── Espace central propriétaire (hub) ───────────── */
+let PROP = { boutiques: [] };
+async function pageProprietaireBoutiques() {
+  $('pageTitle').textContent = 'Mes boutiques';
+  const c = $('content');
+  c.innerHTML = '<div class="panel"><div class="hint">Chargement…</div></div>';
+  try {
+    const me = await api('/proprietaire/me');
+    const ds = await api('/proprietaire/boutiques');
+    PROP.boutiques = ds;
+    const peutCreer = me.quotaDisponible > 0;
+    c.innerHTML = `
+      <div class="kpis">
+        <div class="kpi"><div class="v">${me.nbBoutiques}/${me.quota_boutiques}</div><div class="l">Boutiques (quota)</div></div>
+        <div class="kpi"><div class="v">${me.quotaDisponible}</div><div class="l">Créations restantes</div></div>
+        <div class="kpi"><div class="v">${me.nbCollabs}</div><div class="l">Collaborateurs</div></div>
+      </div>
+      <div class="panel"><h3>Créer une boutique</h3>
+        ${peutCreer ? `<div class="filters">
+          <span><label>Nom</label><input id="bNom" placeholder="Ex : Boutique Marché Sandaga"></span>
+          <span><label>Nature</label><select id="bNature">
+            <option value="habillement">Habillement</option>
+            <option value="epicerie">Épicerie</option>
+            <option value="depot">Dépôt</option>
+            <option value="autre" selected>Autre</option></select></span>
+          <button class="btn" id="bAdd">Créer</button>
+        </div>` : '<div class="hint">Quota atteint. Contactez le super-admin pour augmenter votre quota.</div>'}
+      </div>
+      <div class="panel"><h3>Boutiques du réseau</h3><div id="bTable"></div></div>`;
+    if (peutCreer) $('bAdd').onclick = addBoutique;
+    renderBoutiques();
+  } catch (e) { toast(e.message, true); c.innerHTML = `<div class="panel"><div class="hint">${esc(e.message)}</div></div>`; }
+}
+function renderBoutiques() {
+  $('bTable').innerHTML = PROP.boutiques.length ? `<table>
+    <tr><th>Boutique</th><th>Nature</th><th>Collaborateurs</th><th>État</th><th>Contrôle</th></tr>
+    ${PROP.boutiques.map(d => {
+      const etat = d.gele ? '<span class="tag off">Suspendue</span>'
+        : d.actif ? '<span class="tag on">Active</span>' : '<span class="tag off">Désactivée</span>';
+      return `<tr><td>${esc(d.nom)}</td><td>${esc(NATURE_LABEL[d.nature] || d.nature)}</td>
+        <td>${d.nbUsers}</td><td>${etat}</td>
+        <td class="row-actions">
+          <button class="btn sec" onclick="setBoutiqueGele(${d.id},${d.gele ? 0 : 1})">${d.gele ? 'Réactiver' : 'Suspendre'}</button>
+        </td></tr>`;
+    }).join('')}</table>` : '<div class="hint">Aucune boutique. Créez-en une ci-dessus.</div>';
+}
+async function addBoutique() {
+  if (!$('bNom').value) return toast('Nom requis', true);
+  try { await api('/proprietaire/boutiques', { method: 'POST', body: JSON.stringify({ nom: $('bNom').value, nature: $('bNature').value }) });
+    toast('Boutique créée'); pageProprietaireBoutiques(); }
+  catch (e) { toast(e.message, true); }
+}
+window.setBoutiqueGele = async (id, gele) => {
+  try { await api('/proprietaire/boutiques/' + id, { method: 'PATCH', body: JSON.stringify({ gele }) });
+    toast('Boutique mise à jour'); pageProprietaireBoutiques(); }
+  catch (e) { toast(e.message, true); }
+};
+
+async function pageProprietaireCollabs() {
+  $('pageTitle').textContent = 'Collaborateurs (RH)';
+  const c = $('content');
+  c.innerHTML = '<div class="panel"><div class="hint">Chargement…</div></div>';
+  try {
+    const ds = await api('/proprietaire/boutiques');
+    PROP.boutiques = ds;
+    if (!ds.length) { c.innerHTML = '<div class="panel"><div class="hint">Créez d\'abord une boutique.</div></div>'; return; }
+    const opts = ds.map(d => `<option value="${d.id}">${esc(d.nom)}</option>`).join('');
+    c.innerHTML = `<div class="panel"><h3>Affecter un collaborateur</h3>
+      <div class="filters">
+        <span><label>Boutique</label><select id="cBoutique">${opts}</select></span>
+        <span><label>Identifiant</label><input id="cUser" placeholder="login"></span>
+        <span><label>Nom complet</label><input id="cFull" placeholder="Nom"></span>
+        <span><label>Mot de passe</label><input id="cPass" type="text" placeholder="min 6 car."></span>
+        <span><label>Rôle</label><select id="cRole">
+          <option value="vendeur">Vendeur</option>
+          <option value="stockiste">Stockiste</option>
+          <option value="comptable">Comptable</option>
+          <option value="assistante">Assistante</option>
+          <option value="admin">Gérant (admin boutique)</option></select></span>
+        <button class="btn sec" id="cAdd">Ajouter</button>
+      </div></div>
+      <div class="panel"><h3>Collaborateurs du réseau</h3><div id="cTable"><div class="hint">Chargement…</div></div></div>`;
+    $('cAdd').onclick = addCollab;
+    loadCollabs();
+  } catch (e) { toast(e.message, true); }
+}
+async function loadCollabs() {
+  try {
+    const rows = await api('/proprietaire/collaborateurs');
+    const opts = PROP.boutiques.map(d => d.id).join(',');
+    $('cTable').innerHTML = rows.length ? `<table>
+      <tr><th>Identifiant</th><th>Nom</th><th>Boutique</th><th>Rôle</th><th>Statut</th><th>Mutation</th><th></th></tr>
+      ${rows.map(u => `<tr>
+        <td>${esc(u.username)}</td><td>${esc(u.full_name || '')}</td>
+        <td>${esc(u.boutique_nom)}</td>
+        <td><span class="tag ${u.role}">${ROLE_LABEL[u.role] || u.role}</span></td>
+        <td><span class="tag ${u.actif ? 'on' : 'off'}">${u.actif ? 'Actif' : 'Inactif'}</span></td>
+        <td><select onchange="muterCollab(${u.id}, this.value)">
+          ${PROP.boutiques.map(d => `<option value="${d.id}" ${d.id === u.distributeur_id ? 'selected' : ''}>${esc(d.nom)}</option>`).join('')}
+        </select></td>
+        <td class="row-actions">
+          <button class="btn sec" onclick="toggleCollab(${u.id},${u.actif ? 0 : 1})">${u.actif ? 'Désactiver' : 'Activer'}</button>
+          <button class="btn danger" onclick="delCollab(${u.id})">Suppr.</button>
+        </td></tr>`).join('')}</table>`
+      : '<div class="hint">Aucun collaborateur pour l\'instant.</div>';
+    void opts;
+  } catch (e) { toast(e.message, true); }
+}
+async function addCollab() {
+  const body = { distributeurId: Number($('cBoutique').value), username: $('cUser').value,
+    fullName: $('cFull').value, password: $('cPass').value, role: $('cRole').value };
+  try { await api('/proprietaire/collaborateurs', { method: 'POST', body: JSON.stringify(body) });
+    toast('Collaborateur ajouté'); $('cUser').value = $('cFull').value = $('cPass').value = ''; loadCollabs(); }
+  catch (e) { toast(e.message, true); }
+}
+window.muterCollab = async (id, distributeurId) => {
+  try { await api('/proprietaire/collaborateurs/' + id, { method: 'PATCH', body: JSON.stringify({ distributeurId: Number(distributeurId) }) });
+    toast('Collaborateur muté'); loadCollabs(); }
+  catch (e) { toast(e.message, true); }
+};
+window.toggleCollab = async (id, actif) => {
+  try { await api('/proprietaire/collaborateurs/' + id, { method: 'PATCH', body: JSON.stringify({ actif }) }); loadCollabs(); }
+  catch (e) { toast(e.message, true); }
+};
+window.delCollab = async (id) => {
+  if (!confirm('Supprimer ce collaborateur ?')) return;
+  try { await api('/proprietaire/collaborateurs/' + id, { method: 'DELETE' }); loadCollabs(); }
+  catch (e) { toast(e.message, true); }
+};
 
 /* ───────────── Démarrage ───────────── */
 (async function init() {
