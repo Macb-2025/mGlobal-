@@ -1683,7 +1683,16 @@ async function resynchroniserMessagerie() {
   if (S.page !== 'messagerie' || !$('msgList')) return;
   try { MSG.convs = await api('/messagerie/conversations'); } catch { return; }
   renderConvList();
-  if (MSG.actif) ouvrirConversation(MSG.actif);
+  const id = MSG.actif; if (!id) return;
+  try {
+    const data = await api('/messagerie/conversations/' + id + '/messages');
+    if (MSG.actif !== id) return;
+    const nouveaux = data.messages.filter(m => !MSG.messages.some(x => x.id === m.id));
+    MSG.messages.push(...nouveaux); MSG.messages.sort((a, b) => a.id - b.id);
+    MSG.lectures = data.lectures;
+    renderMessages(nouveaux.length > 0);
+    if (nouveaux.some(m => m.auteurId !== S.user.id) && !document.hidden) marquerLu(id);
+  } catch {}
 }
 
 async function rafraichirNonLus() {
