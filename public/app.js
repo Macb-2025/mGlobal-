@@ -1796,9 +1796,17 @@ function renderThread(conv) {
     <div class="msg-body" id="msgBody"></div>
     <div class="msg-typing" id="msgTyping"></div>
     <form class="msg-compose" id="msgForm">
+      <input type="file" id="msgFile" multiple hidden>
+      <button class="btn sec msg-ico" type="button" id="msgJoindre" title="Joindre un fichier (10 Mo max.)">📎</button>
       <textarea id="msgInput" rows="1" maxlength="4000" placeholder="Écrire un message… (Entrée pour envoyer, Maj+Entrée pour un retour à la ligne)"></textarea>
+      <button class="btn sec msg-ico" type="button" id="msgMicro" title="Message vocal (3 min max.)">🎤</button>
       <button class="btn" type="submit" id="msgSend">Envoyer ➤</button>
-    </form>`;
+    </form>
+    <div class="msg-rec hidden" id="msgRec">
+      <span class="msg-rec-dot"></span><span class="grow">Enregistrement… <b id="msgRecTemps">0:00</b> / 3:00</span>
+      <button class="btn sec" type="button" id="msgRecAnnuler">✕ Annuler</button>
+      <button class="btn" type="button" id="msgRecEnvoyer">Envoyer ➤</button>
+    </div>`;
   $('msgBack').onclick = () => { MSG.actif = null; $('msgWrap')?.classList.remove('open'); renderConvList(); };
   if ($('msgMembres')) $('msgMembres').onclick = () => ajouterMembresModal(conv);
   if ($('msgQuitter')) $('msgQuitter').onclick = () => quitterGroupe(conv);
@@ -1813,6 +1821,14 @@ function renderThread(conv) {
     }
   };
   $('msgForm').onsubmit = (e) => { e.preventDefault(); envoyerMessage(); };
+  $('msgJoindre').onclick = () => $('msgFile').click();
+  $('msgFile').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; envoyerFichiers(f); };
+  $('msgMicro').onclick = demarrerVocal;
+  $('msgRecAnnuler').onclick = () => arreterVocal(false);
+  $('msgRecEnvoyer').onclick = () => arreterVocal(true);
+  t.ondragover = (e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); };
+  t.ondrop = (e) => { if (!e.dataTransfer?.files?.length) return; e.preventDefault(); envoyerFichiers([...e.dataTransfer.files]); };
+  if (REC) afficherEnregistrement(true);
   renderMessages(true);
   input.focus();
 }
@@ -1838,11 +1854,17 @@ function renderMessages(defiler = false) {
     html += `<div class="msg-row ${mien ? 'me' : ''}">
       <div class="msg-bubble">
         ${!mien && conv?.type === 'groupe' ? `<div class="msg-author">${esc(m.auteur)}</div>` : ''}
-        <div class="msg-text">${esc(m.contenu).replace(/\n/g, '<br>')}</div>
+        ${m.piece ? `<div class="msg-piece">${pieceHtml(m)}</div>` : `<div class="msg-text">${esc(m.contenu).replace(/\n/g, '<br>')}</div>`}
         <div class="msg-time">${msgHeure(m.createdAt)}</div>
       </div>${vu ? `<div class="msg-vu">${vu}</div>` : ''}</div>`;
   }
+  // Les pièces déjà chargées sont réutilisées (pas de rechargement, lecture audio non interrompue).
+  const anciennes = new Map([...body.querySelectorAll('[data-piece]')].map(n => [n.dataset.piece, n]));
   body.innerHTML = html;
+  for (const n of body.querySelectorAll('[data-piece]')) {
+    const a = anciennes.get(n.dataset.piece);
+    if (a) n.replaceWith(a); else hydraterPiece(n, body);
+  }
   if ($('msgPlus')) $('msgPlus').onclick = chargerPlus;
   if (defiler || proche) body.scrollTop = body.scrollHeight;
 }
@@ -1868,6 +1890,118 @@ async function envoyerMessage() {
     const m = await api(`/messagerie/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify({ contenu }) });
     ajouterMessage(m);
   } catch (e) { toast(e.message, true); input.value = contenu; }
+}
+
+/* ── Pièces jointes et messages vocaux ── */
+const MAX_PIECE = 10 * 1024 * 1024;
+const MAX_VOCAL_S = 180;
+const PIECES = new Map();
+let REC = null;
+const tailleLisible = (o) => o < 1048576 ? `${Math.max(1, Math.round(o / 1024))} Ko` : `${(o / 1048576).toFixed(1)} Mo`;
+const dureeLisible = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+function pieceHtml(m) {
+  const p = m.piece;
+  if (p.vocal || (p.type || '').startsWith('audio/'))
+    return `<audio controls preload="metadata" data-piece="${m.id}"></audio>${p.vocal ? `<small class="msg-dur">🎤 ${dureeLisible(p.duree || 0)}</small>` : ''}`;
+  if (/^image\/(png|jpeg|gif|webp)$/.test(p.type || ''))
+    return `<img class="msg-img" alt="${esc(p.nom)}" title="${esc(p.nom)}" data-piece="${m.id}">`;
+  return `<a class="msg-file" href="#" data-piece="${m.id}" data-nom="${esc(p.nom)}">📎 <span>${esc(p.nom)}</span><small>${tailleLisible(p.taille || 0)}</small></a>`;
+}
+
+function urlPiece(id) {
+  if (!PIECES.has(id)) {
+    PIECES.set(id, fetch('/api/messagerie/pieces/' + id, { headers: { Authorization: 'Bearer ' + S.token } })
+      .then(r => { if (!r.ok) throw new Error('Fichier indisponible'); return r.blob(); })
+      .then(b => URL.createObjectURL(b))
+      .catch(e => { PIECES.delete(id); throw e; }));
+  }
+  return PIECES.get(id);
+}
+
+function hydraterPiece(n, body) {
+  const id = n.dataset.piece;
+  if (n.tagName === 'A') {
+    n.onclick = async (e) => {
+      e.preventDefault();
+      try { const a = document.createElement('a'); a.href = await urlPiece(id); a.download = n.dataset.nom || 'fichier'; a.click(); }
+      catch (err) { toast(err.message, true); }
+    };
+    return;
+  }
+  const enBas = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  urlPiece(id).then(u => {
+    if (n.tagName === 'IMG') {
+      n.onload = () => { if (enBas) body.scrollTop = body.scrollHeight; };
+      n.onclick = () => window.open(u, '_blank');
+    }
+    n.src = u;
+  }).catch(() => n.replaceWith(el('<span class="hint">Fichier indisponible</span>')));
+}
+
+async function envoyerPiece(blob, nom, duree = null) {
+  const id = MSG.actif; if (!id || !blob?.size) return;
+  if (blob.size > MAX_PIECE) return toast(`« ${nom} » dépasse 10 Mo`, true);
+  const headers = { 'Content-Type': 'application/octet-stream', 'X-Type-Fichier': blob.type || 'application/octet-stream',
+    'X-Nom-Fichier': encodeURIComponent(nom), Authorization: 'Bearer ' + S.token };
+  if (duree != null) headers['X-Duree'] = String(duree);
+  const statut = $('msgTyping'); if (statut) statut.textContent = `Envoi de ${nom}…`;
+  try {
+    const res = await fetch(`/api/messagerie/conversations/${id}/pieces`, { method: 'POST', headers, body: blob });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Envoi impossible');
+    ajouterMessage(data);
+  } catch (e) { toast(e.message, true); }
+  finally { renderEcrit(); }
+}
+
+async function envoyerFichiers(fichiers) {
+  for (const f of fichiers) await envoyerPiece(f, f.name);
+}
+
+function afficherEnregistrement(on) {
+  $('msgForm')?.classList.toggle('hidden', on);
+  $('msgRec')?.classList.toggle('hidden', !on);
+  if (on && REC && $('msgRecTemps')) $('msgRecTemps').textContent = dureeLisible(Math.floor((Date.now() - REC.debut) / 1000));
+}
+
+async function demarrerVocal() {
+  if (REC) return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder)
+    return toast('Enregistrement audio non pris en charge par ce navigateur', true);
+  let flux;
+  try { flux = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { return toast('Accès au micro refusé', true); }
+  const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(t => MediaRecorder.isTypeSupported(t));
+  const rec = new MediaRecorder(flux, mime ? { mimeType: mime } : undefined);
+  const morceaux = [];
+  const r = REC = { rec, flux, debut: Date.now(), conv: MSG.actif, envoyer: false };
+  rec.ondataavailable = (e) => { if (e.data.size) morceaux.push(e.data); };
+  rec.onstop = () => {
+    flux.getTracks().forEach(t => t.stop());
+    clearInterval(r.timer); REC = null; afficherEnregistrement(false);
+    if (!r.envoyer || r.conv !== MSG.actif) return;
+    const duree = Math.min(MAX_VOCAL_S, Math.round((Date.now() - r.debut) / 1000));
+    const type = (rec.mimeType || 'audio/webm').split(';')[0];
+    const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+    envoyerPiece(new Blob(morceaux, { type }), `vocal-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`, duree);
+  };
+  rec.start(1000);
+  r.timer = setInterval(() => {
+    // Conversation quittée ou page changée : on abandonne l'enregistrement.
+    if (!$('msgRec') || MSG.actif !== r.conv) return arreterVocal(false);
+    const s = Math.floor((Date.now() - r.debut) / 1000);
+    if ($('msgRecTemps')) $('msgRecTemps').textContent = dureeLisible(s);
+    if (s >= MAX_VOCAL_S) arreterVocal(true);
+  }, 250);
+  afficherEnregistrement(true);
+}
+
+function arreterVocal(envoyer) {
+  if (!REC) return;
+  REC.envoyer = envoyer;
+  if (REC.rec.state !== 'inactive') REC.rec.stop();
 }
 
 function ajouterMessage(m) {

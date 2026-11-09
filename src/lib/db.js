@@ -7,7 +7,7 @@ import path from 'path';
 import fs from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
+export const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const key = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 24);
@@ -328,6 +328,12 @@ CREATE TABLE IF NOT EXISTS messages (
   conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   auteur_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
   contenu         TEXT NOT NULL,
+  -- Pièce jointe éventuelle (fichier ou message vocal), stockée dans DATA_DIR/messagerie/
+  piece_fichier   TEXT,
+  piece_nom       TEXT,
+  piece_type      TEXT,
+  piece_taille    INTEGER,
+  piece_duree     INTEGER,
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, id);
@@ -345,6 +351,8 @@ function addColumn(table, col, ddl) {
   }
 }
 addColumn('distributeurs', 'gele', 'gele INTEGER NOT NULL DEFAULT 0');
+for (const c of ['piece_fichier TEXT', 'piece_nom TEXT', 'piece_type TEXT', 'piece_taille INTEGER', 'piece_duree INTEGER'])
+  addColumn('messages', c.split(' ')[0], c);
 addColumn('conversation_membres', 'rejoint_apres_id', 'rejoint_apres_id INTEGER NOT NULL DEFAULT 0');
 // Compte fournisseur (rôle 'fournisseur') rattaché à une entité fournisseur.
 addColumn('users', 'fournisseur_id', 'fournisseur_id INTEGER REFERENCES fournisseurs(id) ON DELETE CASCADE');

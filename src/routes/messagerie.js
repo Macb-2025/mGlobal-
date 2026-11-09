@@ -1,5 +1,8 @@
-import { Router } from 'express';
-import db from '../lib/db.js';
+import express, { Router } from 'express';
+import fs from 'fs';
+import path from 'path';
+import { nanoid } from 'nanoid';
+import db, { DATA_DIR } from '../lib/db.js';
 import { requireAuth, requireEspaceActif } from '../lib/auth.js';
 import { peutContacter, utilisateurActif, membresConversation, estMembre } from '../lib/messagerie.js';
 
@@ -14,6 +17,14 @@ r.use(requireAuth, requireEspaceActif);
 r.use((req, res, next) => utilisateurActif(req.user.uid) ? next() : res.status(401).json({ error: 'Compte inactif' }));
 
 const MAX_MESSAGE = 4000;
+const MAX_PIECE = 10 * 1024 * 1024;   // 10 Mo par fichier / message vocal
+const MAX_VOCAL_S = 180;
+const PIECES_DIR = path.join(DATA_DIR, 'messagerie');
+fs.mkdirSync(PIECES_DIR, { recursive: true });
+// Types affichables directement (aperçu image, lecteur audio) ; le reste est servi en téléchargement.
+const TYPES_INLINE = /^(image\/(png|jpeg|gif|webp)|audio\/(webm|ogg|mp4|mpeg|wav|x-m4a|aac))$/;
+const tailleLisible = (o) => o < 1024 * 1024 ? `${Math.max(1, Math.round(o / 1024))} Ko` : `${(o / 1048576).toFixed(1)} Mo`;
+const dureeLisible = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 const moi = (req) => utilisateurActif(req.user.uid);
 
 const nomDistributeur = (id) => id
@@ -50,9 +61,39 @@ function vueConversation(convId, userId) {
 }
 
 function messageVue(id) {
-  return db.prepare(`SELECT m.id, m.conversation_id AS conversationId, m.contenu, m.created_at AS createdAt,
-      m.auteur_id AS auteurId, COALESCE(u.full_name, u.username, 'Compte supprimé') AS auteur, u.role AS auteurRole
+  const m = db.prepare(`SELECT m.id, m.conversation_id AS conversationId, m.contenu, m.created_at AS createdAt,
+      m.auteur_id AS auteurId, COALESCE(u.full_name, u.username, 'Compte supprimé') AS auteur, u.role AS auteurRole,
+      m.piece_fichier, m.piece_nom, m.piece_type, m.piece_taille, m.piece_duree
     FROM messages m LEFT JOIN users u ON u.id = m.auteur_id WHERE m.id = ?`).get(id);
+  if (!m) return m;
+  const { piece_fichier, piece_nom, piece_type, piece_taille, piece_duree, ...vue } = m;
+  vue.piece = piece_fichier
+    ? { nom: piece_nom, type: piece_type, taille: piece_taille, duree: piece_duree, vocal: piece_duree != null }
+    : null;
+  return vue;
+}
+
+// Enregistre un message (texte et/ou pièce jointe) et le diffuse aux membres.
+function publierMessage(convId, auteurId, contenu, piece = null) {
+  const msgId = db.transaction(() => {
+    const m = db.prepare(`INSERT INTO messages (conversation_id, auteur_id, contenu,
+        piece_fichier, piece_nom, piece_type, piece_taille, piece_duree) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(convId, auteurId, contenu, piece?.fichier ?? null, piece?.nom ?? null, piece?.type ?? null,
+        piece?.taille ?? null, piece?.duree ?? null).lastInsertRowid;
+    db.prepare(`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`).run(convId);
+    db.prepare(`UPDATE conversation_membres SET dernier_lu_id = ? WHERE conversation_id = ? AND user_id = ?`)
+      .run(m, convId, auteurId);
+    return m;
+  })();
+  const message = messageVue(msgId);
+  for (const uid of membresConversation(convId))
+    emitToUsers([uid], 'msg:nouveau', { message, conversation: vueConversation(convId, uid) });
+  return message;
+}
+
+function supprimerPieces(convId) {
+  for (const { f } of db.prepare(`SELECT piece_fichier f FROM messages WHERE conversation_id = ? AND piece_fichier IS NOT NULL`).all(convId))
+    fs.rm(path.join(PIECES_DIR, f), { force: true }, () => {});
 }
 
 // Prévient chaque membre que la conversation a changé (vue personnalisée : non-lus).
@@ -165,18 +206,50 @@ r.post('/conversations/:id/messages', (req, res) => {
   if (!contenu) return res.status(400).json({ error: 'Message vide' });
   if (contenu.length > MAX_MESSAGE)
     return res.status(400).json({ error: `Message trop long (${MAX_MESSAGE} caractères max.)` });
-  const msgId = db.transaction(() => {
-    const m = db.prepare(`INSERT INTO messages (conversation_id, auteur_id, contenu) VALUES (?, ?, ?)`)
-      .run(id, req.user.uid, contenu).lastInsertRowid;
-    db.prepare(`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`).run(id);
-    db.prepare(`UPDATE conversation_membres SET dernier_lu_id = ? WHERE conversation_id = ? AND user_id = ?`)
-      .run(m, id, req.user.uid);
-    return m;
-  })();
-  const message = messageVue(msgId);
-  for (const uid of membresConversation(id))
-    emitToUsers([uid], 'msg:nouveau', { message, conversation: vueConversation(id, uid) });
-  res.json(message);
+  res.json(publierMessage(id, req.user.uid, contenu));
+});
+
+// Pièce jointe : corps brut (fichier ou enregistrement audio), métadonnées en en-têtes.
+//   X-Nom-Fichier (encodeURIComponent), X-Type-Fichier (type MIME réel), X-Duree (secondes, messages vocaux)
+r.post('/conversations/:id/pieces', (req, res, next) => {
+  if (!conversationAutorisee(req, res)) return;
+  express.raw({ type: () => true, limit: MAX_PIECE })(req, res, (err) => {
+    if (err) return res.status(err.status === 413 ? 413 : 400)
+      .json({ error: err.status === 413 ? 'Fichier trop volumineux (10 Mo max.)' : 'Envoi invalide' });
+    next();
+  });
+}, (req, res) => {
+  const id = Number(req.params.id);
+  const data = req.body;
+  if (!Buffer.isBuffer(data) || !data.length) return res.status(400).json({ error: 'Fichier vide' });
+  let nom = 'fichier';
+  try { nom = decodeURIComponent(String(req.get('X-Nom-Fichier') || 'fichier')); } catch {}
+  nom = nom.replace(/[\\/\x00-\x1f"]/g, '_').trim().slice(0, 150) || 'fichier';
+  const type = String(req.get('X-Type-Fichier') || 'application/octet-stream').split(';')[0].trim().toLowerCase().slice(0, 100);
+  const dureeBrute = req.get('X-Duree');
+  const duree = dureeBrute != null ? Math.round(Number(dureeBrute)) : null;
+  if (duree != null) {
+    if (!type.startsWith('audio/') || !(duree >= 0)) return res.status(400).json({ error: 'Message vocal invalide' });
+    if (duree > MAX_VOCAL_S + 2) return res.status(400).json({ error: 'Message vocal trop long (3 min max.)' });
+  }
+  const fichier = nanoid(24);
+  fs.writeFileSync(path.join(PIECES_DIR, fichier), data);
+  const contenu = duree != null ? `🎤 Message vocal (${dureeLisible(duree)})` : `📎 ${nom} (${tailleLisible(data.length)})`;
+  res.json(publierMessage(id, req.user.uid, contenu, { fichier, nom, type, taille: data.length, duree }));
+});
+
+// Téléchargement d'une pièce jointe, réservé aux membres de la conversation.
+r.get('/pieces/:messageId', (req, res) => {
+  const m = db.prepare(`SELECT conversation_id c, piece_fichier f, piece_nom n, piece_type t FROM messages WHERE id = ?`)
+    .get(Number(req.params.messageId));
+  if (!m?.f || !estMembre(m.c, req.user.uid)) return res.status(404).json({ error: 'Fichier introuvable' });
+  const chemin = path.join(PIECES_DIR, m.f);
+  if (!fs.existsSync(chemin)) return res.status(404).json({ error: 'Fichier introuvable' });
+  const inline = TYPES_INLINE.test(m.t || '');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Content-Type', inline ? m.t : 'application/octet-stream');
+  res.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(m.n || 'fichier')}`);
+  res.sendFile(chemin);
 });
 
 // Marque la conversation comme lue jusqu'au dernier message.
@@ -218,7 +291,10 @@ r.delete('/conversations/:id/membres/moi', (req, res) => {
   const c = db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(id);
   if (c.type !== 'groupe') return res.status(400).json({ error: 'Impossible de quitter une conversation directe' });
   db.prepare(`DELETE FROM conversation_membres WHERE conversation_id = ? AND user_id = ?`).run(id, req.user.uid);
-  if (!membresConversation(id).length) db.prepare(`DELETE FROM conversations WHERE id = ?`).run(id);
+  if (!membresConversation(id).length) {
+    supprimerPieces(id);
+    db.prepare(`DELETE FROM conversations WHERE id = ?`).run(id);
+  }
   else notifierConversation(id);
   res.json({ ok: true });
 });
