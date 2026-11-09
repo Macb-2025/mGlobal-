@@ -1860,10 +1860,11 @@ function renderMessages(defiler = false) {
       </div>${vu ? `<div class="msg-vu">${vu}</div>` : ''}</div>`;
   }
   // Les pièces déjà chargées sont réutilisées (pas de rechargement, lecture audio non interrompue).
-  const anciennes = new Map([...body.querySelectorAll('[data-piece]')].map(n => [n.dataset.piece, n]));
+  const cle = (n) => n.tagName + n.dataset.piece;
+  const anciennes = new Map([...body.querySelectorAll('[data-piece]')].map(n => [cle(n), n]));
   body.innerHTML = html;
   for (const n of body.querySelectorAll('[data-piece]')) {
-    const a = anciennes.get(n.dataset.piece);
+    const a = anciennes.get(cle(n));
     if (a) n.replaceWith(a); else hydraterPiece(n, body);
   }
   if ($('msgPlus')) $('msgPlus').onclick = chargerPlus;
@@ -1903,11 +1904,14 @@ const dureeLisible = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, 
 
 function pieceHtml(m) {
   const p = m.piece;
-  if (p.vocal || (p.type || '').startsWith('audio/'))
-    return `<audio controls preload="metadata" data-piece="${m.id}"></audio>${p.vocal ? `<small class="msg-dur">🎤 ${dureeLisible(p.duree || 0)}</small>` : ''}`;
+  const lien = `<a class="msg-file" href="#" data-piece="${m.id}" data-nom="${esc(p.nom)}">📎 <span>${esc(p.nom)}</span><small>${tailleLisible(p.taille || 0)}</small></a>`;
+  const lisible = (p.type || '').startsWith('audio/') && document.createElement('audio').canPlayType(p.type) !== '';
+  if (p.vocal && lisible)
+    return `<audio controls preload="metadata" data-piece="${m.id}"></audio><small class="msg-dur">🎤 ${dureeLisible(p.duree || 0)}</small>`;
+  if (lisible) return `<audio controls preload="metadata" data-piece="${m.id}"></audio>${lien}`;
   if (/^image\/(png|jpeg|gif|webp)$/.test(p.type || ''))
     return `<img class="msg-img" alt="${esc(p.nom)}" title="${esc(p.nom)}" data-piece="${m.id}">`;
-  return `<a class="msg-file" href="#" data-piece="${m.id}" data-nom="${esc(p.nom)}">📎 <span>${esc(p.nom)}</span><small>${tailleLisible(p.taille || 0)}</small></a>`;
+  return lien;
 }
 
 function urlPiece(id) {
