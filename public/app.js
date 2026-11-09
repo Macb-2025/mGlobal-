@@ -1688,7 +1688,13 @@ async function resynchroniserMessagerie() {
     const data = await api('/messagerie/conversations/' + id + '/messages');
     if (MSG.actif !== id) return;
     const nouveaux = data.messages.filter(m => !MSG.messages.some(x => x.id === m.id));
-    MSG.messages.push(...nouveaux); MSG.messages.sort((a, b) => a.id - b.id);
+    const dernierLocal = MSG.messages.length ? MSG.messages[MSG.messages.length - 1].id : 0;
+    // Trop de messages manqués : on repart de la dernière page (« charger plus » remonte le reste).
+    if (data.plus && data.messages.length && data.messages[0].id > dernierLocal) {
+      MSG.messages = data.messages; MSG.plus = data.plus;
+    } else {
+      MSG.messages.push(...nouveaux); MSG.messages.sort((a, b) => a.id - b.id);
+    }
     MSG.lectures = data.lectures;
     renderMessages(nouveaux.length > 0);
     if (nouveaux.some(m => m.auteurId !== S.user.id) && !document.hidden) marquerLu(id);
