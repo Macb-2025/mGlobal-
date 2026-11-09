@@ -2,6 +2,10 @@ import { Router } from 'express';
 import db from '../lib/db.js';
 import { requireAuth, requireEspaceActif } from '../lib/auth.js';
 import { peutContacter, utilisateurActif, membresConversation, estMembre } from '../lib/messagerie.js';
+
+// Dans un groupe, chaque membre peut lire chaque autre : toutes les paires doivent être autorisées.
+const groupeCompatible = (users) =>
+  users.every((a, i) => a && users.slice(i + 1).every(b => peutContacter(a, b)));
 import { emitToUsers, estEnLigne } from '../lib/realtime.js';
 
 // Messagerie interne : distributeurs (tous rôles), fournisseurs et super-admin.
@@ -104,7 +108,7 @@ r.post('/conversations', (req, res) => {
     const ids = [...new Set((Array.isArray(membres) ? membres : []).map(Number))].filter(id => id && id !== me.id);
     if (!ids.length) return res.status(400).json({ error: 'Choisissez au moins un participant' });
     const users = ids.map(utilisateurActif);
-    if (users.some(u => !peutContacter(me, u)))
+    if (!groupeCompatible([me, ...users]))
       return res.status(403).json({ error: 'Un des participants n\'est pas joignable' });
     const nom = String(titre || '').trim().slice(0, 120);
     if (!nom) return res.status(400).json({ error: 'Nom du groupe requis' });
@@ -193,7 +197,10 @@ r.post('/conversations/:id/membres', (req, res) => {
   const me = moi(req);
   const ids = [...new Set((req.body?.userIds || []).map(Number))].filter(Boolean);
   const users = ids.map(utilisateurActif);
-  if (!ids.length || users.some(u => !peutContacter(me, u)))
+  const actuels = membresConversation(id);
+  const nouveaux = users.filter(u => !u || !actuels.includes(u.id));
+  const existants = actuels.map(utilisateurActif).filter(Boolean);
+  if (!ids.length || users.some(u => !peutContacter(me, u)) || !groupeCompatible([...existants, ...nouveaux]))
     return res.status(403).json({ error: 'Participant non joignable' });
   const add = db.prepare(`INSERT OR IGNORE INTO conversation_membres (conversation_id, user_id) VALUES (?, ?)`);
   db.transaction(() => { for (const uid of ids) add.run(id, uid); })();
