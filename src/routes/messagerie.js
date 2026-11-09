@@ -4,7 +4,7 @@ import path from 'path';
 import { nanoid } from 'nanoid';
 import db, { DATA_DIR } from '../lib/db.js';
 import { requireAuth, requireEspaceActif } from '../lib/auth.js';
-import { peutContacter, utilisateurActif, membresConversation, estMembre } from '../lib/messagerie.js';
+import { peutContacter, utilisateurActif, membresConversation, estMembre, PIECES_DIR, supprimerConversationsVides } from '../lib/messagerie.js';
 
 // Dans un groupe, chaque membre peut lire chaque autre : toutes les paires doivent être autorisées.
 const groupeCompatible = (users) =>
@@ -19,8 +19,6 @@ r.use((req, res, next) => utilisateurActif(req.user.uid) ? next() : res.status(4
 const MAX_MESSAGE = 4000;
 const MAX_PIECE = 10 * 1024 * 1024;   // 10 Mo par fichier / message vocal
 const MAX_VOCAL_S = 180;
-const PIECES_DIR = path.resolve(DATA_DIR, 'messagerie');
-fs.mkdirSync(PIECES_DIR, { recursive: true });
 // Types affichables directement (aperçu image, lecteur audio) ; le reste est servi en téléchargement.
 const TYPES_INLINE = /^(image\/(png|jpeg|gif|webp)|audio\/(webm|ogg|mp4|mpeg|wav|x-m4a|aac))$/;
 const tailleLisible = (o) => o < 1024 * 1024 ? `${Math.max(1, Math.round(o / 1024))} Ko` : `${(o / 1048576).toFixed(1)} Mo`;
@@ -91,10 +89,7 @@ function publierMessage(convId, auteurId, contenu, piece = null) {
   return message;
 }
 
-function supprimerPieces(convId) {
-  for (const { f } of db.prepare(`SELECT piece_fichier f FROM messages WHERE conversation_id = ? AND piece_fichier IS NOT NULL`).all(convId))
-    fs.rm(path.join(PIECES_DIR, f), { force: true }, () => {});
-}
+
 
 // Prévient chaque membre que la conversation a changé (vue personnalisée : non-lus).
 function notifierConversation(convId, type = 'conv:maj') {
@@ -291,10 +286,7 @@ r.delete('/conversations/:id/membres/moi', (req, res) => {
   const c = db.prepare(`SELECT * FROM conversations WHERE id = ?`).get(id);
   if (c.type !== 'groupe') return res.status(400).json({ error: 'Impossible de quitter une conversation directe' });
   db.prepare(`DELETE FROM conversation_membres WHERE conversation_id = ? AND user_id = ?`).run(id, req.user.uid);
-  if (!membresConversation(id).length) {
-    supprimerPieces(id);
-    db.prepare(`DELETE FROM conversations WHERE id = ?`).run(id);
-  }
+  if (!membresConversation(id).length) supprimerConversationsVides();
   else notifierConversation(id);
   res.json({ ok: true });
 });

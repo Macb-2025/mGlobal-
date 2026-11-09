@@ -3,6 +3,7 @@ import { customAlphabet } from 'nanoid';
 import db from '../lib/db.js';
 import { requireAuth, requireRole, hashPassword, requireEspaceActif } from '../lib/auth.js';
 import { newKey } from '../lib/db.js';
+import { supprimerConversationsVides } from '../lib/messagerie.js';
 
 const r = Router();
 r.use(requireAuth);
@@ -72,6 +73,7 @@ r.delete('/users/:id', requireRole('superadmin', 'admin'), requireEspaceActif, (
     return res.status(403).json({ error: 'Hors de votre espace' });
   if (u.role === 'superadmin') return res.status(403).json({ error: 'Compte protégé' });
   db.prepare(`DELETE FROM users WHERE id = ?`).run(u.id);
+  supprimerConversationsVides();
   res.json({ ok: true });
 });
 

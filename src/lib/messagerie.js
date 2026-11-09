@@ -1,4 +1,21 @@
-import db from './db.js';
+import fs from 'fs';
+import path from 'path';
+import db, { DATA_DIR } from './db.js';
+
+// Pièces jointes de la messagerie (fichiers et messages vocaux).
+export const PIECES_DIR = path.resolve(DATA_DIR, 'messagerie');
+fs.mkdirSync(PIECES_DIR, { recursive: true });
+
+// Supprime les conversations sans membre (dernier membre parti ou compte supprimé) et leurs fichiers.
+export function supprimerConversationsVides() {
+  const vides = db.prepare(`SELECT id FROM conversations c
+    WHERE NOT EXISTS (SELECT 1 FROM conversation_membres m WHERE m.conversation_id = c.id)`).all();
+  for (const { id } of vides) {
+    for (const { f } of db.prepare(`SELECT piece_fichier f FROM messages WHERE conversation_id = ? AND piece_fichier IS NOT NULL`).all(id))
+      fs.rm(path.join(PIECES_DIR, f), { force: true }, () => {});
+    db.prepare(`DELETE FROM conversations WHERE id = ?`).run(id);
+  }
+}
 
 // Règles de contact de la messagerie :
 //   - le super-admin peut écrire à tout le monde, et tout le monde peut lui écrire (support) ;
