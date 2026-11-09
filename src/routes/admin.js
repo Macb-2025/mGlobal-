@@ -177,6 +177,7 @@ r.delete('/fournisseurs-comptes/:id', requireRole('superadmin'), (req, res) => {
       db.prepare(`DELETE FROM fournisseurs WHERE id = ?`).run(u.fournisseur_id);
   });
   tx();
+  supprimerConversationsVides();
   res.json({ ok: true });
 });
 
