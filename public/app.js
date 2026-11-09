@@ -1939,13 +1939,13 @@ function hydraterPiece(n, body) {
   }).catch(() => n.replaceWith(el('<span class="hint">Fichier indisponible</span>')));
 }
 
-async function envoyerPiece(blob, nom, duree = null) {
-  const id = MSG.actif; if (!id || !blob?.size) return;
+async function envoyerPiece(blob, nom, duree, id) {
+  if (!id || !blob?.size) return;
   if (blob.size > MAX_PIECE) return toast(`« ${nom} » dépasse 10 Mo`, true);
   const headers = { 'Content-Type': 'application/octet-stream', 'X-Type-Fichier': blob.type || 'application/octet-stream',
     'X-Nom-Fichier': encodeURIComponent(nom), Authorization: 'Bearer ' + S.token };
   if (duree != null) headers['X-Duree'] = String(duree);
-  const statut = $('msgTyping'); if (statut) statut.textContent = `Envoi de ${nom}…`;
+  const statut = MSG.actif === id ? $('msgTyping') : null; if (statut) statut.textContent = `Envoi de ${nom}…`;
   try {
     const res = await fetch(`/api/messagerie/conversations/${id}/pieces`, { method: 'POST', headers, body: blob });
     if (res.status === 401) { logout(); return; }
@@ -1957,7 +1957,8 @@ async function envoyerPiece(blob, nom, duree = null) {
 }
 
 async function envoyerFichiers(fichiers) {
-  for (const f of fichiers) await envoyerPiece(f, f.name);
+  const id = MSG.actif;   // fixée au départ : changer de conversation ne redirige pas les fichiers suivants
+  for (const f of fichiers) await envoyerPiece(f, f.name, null, id);
 }
 
 function afficherEnregistrement(on) {
@@ -1985,7 +1986,7 @@ async function demarrerVocal() {
     const duree = Math.min(MAX_VOCAL_S, Math.round((Date.now() - r.debut) / 1000));
     const type = (rec.mimeType || 'audio/webm').split(';')[0];
     const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
-    envoyerPiece(new Blob(morceaux, { type }), `vocal-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`, duree);
+    envoyerPiece(new Blob(morceaux, { type }), `vocal-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`, duree, r.conv);
   };
   rec.start(1000);
   r.timer = setInterval(() => {
