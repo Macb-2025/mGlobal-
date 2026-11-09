@@ -1,7 +1,7 @@
 import { WebSocketServer } from 'ws';
 import jwt from 'jsonwebtoken';
 import db from './db.js';
-import { JWT_SECRET } from './auth.js';
+import { JWT_SECRET, etatDistributeur } from './auth.js';
 import { peutContacter, estMembre, membresConversation } from './messagerie.js';
 
 // Hub temps réel : navigateurs (distributeurs) + postes pont bascule.
@@ -42,7 +42,7 @@ export function initRealtime(server) {
     ws.send(JSON.stringify({ type: 'hello', kind: ctx.kind, ts: new Date().toISOString() }));
     if (ctx.kind !== 'user') return;
     const premiereConnexion = connexionsUtilisateur(ctx.uid) === 1;
-    if (premiereConnexion) emitPresence(ctx, true);
+    if (premiereConnexion && messagerieAutorisee(ctx)) emitPresence(ctx, true);
     ws.on('message', (raw) => onUserMessage(ws, raw));
     ws.on('close', () => { if (connexionsUtilisateur(ctx.uid) === 0) emitPresence(ctx, false); });
   });
@@ -99,11 +99,25 @@ function connexionsUtilisateur(uid) {
 
 export const estEnLigne = (uid) => connexionsUtilisateur(uid) > 0;
 
+// Messagerie : un compte désactivé ou un espace gelé/désactivé ne reçoit plus rien,
+// même sur une connexion ouverte avant le blocage.
+function messagerieAutorisee(ctx) {
+  if (!db.prepare(`SELECT 1 FROM users WHERE id = ? AND actif = 1`).get(ctx.uid)) return false;
+  if (ctx.role === 'superadmin') return true;
+  const e = etatDistributeur(ctx.did);
+  return e.existe && !e.bloque;
+}
+
 export function emitToUsers(userIds, type, payload) {
   if (!wss || !userIds?.length) return;
   const cible = new Set(userIds);
-  for (const ws of wss.clients)
-    if (ws.ctx?.kind === 'user' && cible.has(ws.ctx.uid)) send(ws, { type, ...payload });
+  const autorise = new Map();
+  for (const ws of wss.clients) {
+    const c = ws.ctx;
+    if (c?.kind !== 'user' || !cible.has(c.uid)) continue;
+    if (!autorise.has(c.uid)) autorise.set(c.uid, messagerieAutorisee(c));
+    if (autorise.get(c.uid)) send(ws, { type, ...payload });
+  }
 }
 
 // Présence (en ligne / hors ligne) diffusée aux seuls contacts autorisés.
@@ -113,7 +127,7 @@ function emitPresence(ctx, enLigne) {
   for (const ws of wss.clients) {
     const c = ws.ctx;
     if (c?.kind !== 'user' || c.uid === ctx.uid) continue;
-    if (peutContacter(moi, { id: c.uid, role: c.role, distributeur_id: c.did }))
+    if (peutContacter(moi, { id: c.uid, role: c.role, distributeur_id: c.did }) && messagerieAutorisee(c))
       send(ws, { type: 'presence', userId: ctx.uid, enLigne });
   }
 }
@@ -121,7 +135,7 @@ function emitPresence(ctx, enLigne) {
 // Messages entrants des navigateurs : indicateur « en train d'écrire ».
 function onUserMessage(ws, raw) {
   let m; try { m = JSON.parse(raw.toString()); } catch { return; }
-  if (m?.type !== 'msg:ecrit') return;
+  if (m?.type !== 'msg:ecrit' || !messagerieAutorisee(ws.ctx)) return;
   const convId = Number(m.conversationId);
   if (!convId || !estMembre(convId, ws.ctx.uid)) return;
   const autres = membresConversation(convId).filter(u => u !== ws.ctx.uid);
