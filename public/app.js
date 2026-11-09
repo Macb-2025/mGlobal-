@@ -1763,6 +1763,7 @@ function majConversation(conv) {
 }
 
 async function ouvrirConversation(id) {
+  viderPieces();
   MSG.actif = id; MSG.messages = []; MSG.lectures = []; MSG.ecrit = {};
   renderConvList();
   $('msgWrap')?.classList.add('open');
@@ -1917,6 +1918,12 @@ function urlPiece(id) {
       .catch(e => { PIECES.delete(id); throw e; }));
   }
   return PIECES.get(id);
+}
+
+// Libère les fichiers chargés (blob:) de la conversation précédente.
+function viderPieces() {
+  for (const p of PIECES.values()) p.then(u => URL.revokeObjectURL(u), () => {});
+  PIECES.clear();
 }
 
 function hydraterPiece(n, body) {
