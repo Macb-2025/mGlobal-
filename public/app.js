@@ -116,8 +116,9 @@ function enterApp() {
   $('spaceName').textContent = u.distributeur ? u.distributeur.nom : 'Vue globale mGlobal';
   $('who').innerHTML = `<b>${esc(u.fullName || u.username)}</b><br>${ROLE_LABEL[u.role] || u.role}`;
   const nav = $('nav'); nav.innerHTML = '';
-  for (const m of menuFor(u.role)) {
-    const b = el(`<button data-page="${m.id}">${m.label}</button>`);
+  for (const m of [...menuFor(u.role), { id: 'messagerie', label: '💬 Messagerie' }]) {
+    const badge = m.id === 'messagerie' ? '<span class="nav-badge hidden" id="msgBadge"></span>' : '';
+    const b = el(`<button data-page="${m.id}">${m.label}${badge}</button>`);
     b.onclick = () => go(m.id);
     nav.appendChild(b);
   }
@@ -127,6 +128,7 @@ function enterApp() {
     : u.role === 'fournisseur' ? 'espaceFournisseur' : 'dashboard';
   go(accueil);
   connectWS();
+  rafraichirNonLus();
 }
 
 // Historique de navigation (pour le bouton « Retour »).
@@ -136,13 +138,14 @@ function go(page, fromBack = false) {
   S.page = page;
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   if (S.liveTimer) { clearInterval(S.liveTimer); S.liveTimer = null; }
+  if (page !== 'messagerie') MSG.actif = null;
   updateBackBtn();
   ({ dashboard: pageDashboard, suivi: pageSuivi, bons: pageBons, clients: pageClients,
      fournisseurs: pageFournisseurs, stock: pageStock, gros: pageGros,
      facturation: pageFacturation, relicat: pageRelicat, recherche: pageRecherche,
      compta: pageCompta, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
      parametres: pageParametres, fournisseursComptes: pageFournisseursComptes,
-     espaceFournisseur: pageEspaceFournisseur }[page] || pageDashboard)();
+     espaceFournisseur: pageEspaceFournisseur, messagerie: pageMessagerie }[page] || pageDashboard)();
 }
 function goBack() {
   const prev = S.history.pop();
@@ -519,13 +522,18 @@ function connectWS() {
   try {
     const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(S.token)}`);
     S.ws = ws;
-    ws.onopen = () => { const d = $('wsDot'); if (d) d.classList.add('on'); };
+    ws.onopen = () => {
+      const d = $('wsDot'); if (d) d.classList.add('on');
+      if (S.wsReconnexion) resynchroniserMessagerie();
+      S.wsReconnexion = true;
+    };
     ws.onclose = () => { const d = $('wsDot'); if (d) d.classList.remove('on'); S.ws = null;
       if (S.token) setTimeout(connectWS, 4000); };
     ws.onmessage = (ev) => {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if ((m.type === 'bon:maj' || m.type === 'bon:nouveau' || m.type === 'bon:annule') && S.page === 'suivi') loadSuivi();
       if (m.type === 'live' && S.page === 'dashboard' && m.live) applyLive(m.live);
+      onMessagerieEvent(m);
     };
   } catch {}
 }
@@ -1644,6 +1652,533 @@ async function enregistrerLivraisonEF() {
       body: JSON.stringify({ produit_id, quantite, prix_unitaire, note: $('efNote').value }) });
     toast(r.message || 'Livraison enregistrée');
     pageEspaceFournisseur();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ───────────── Messagerie interne ───────────── */
+const MSG = { convs: [], actif: null, messages: [], lectures: [], plus: false, ecrit: {}, dernierEcrit: 0 };
+const msgDate = (s) => new Date(String(s || '').replace(' ', 'T') + (String(s).includes('Z') ? '' : 'Z'));
+const msgHeure = (s) => msgDate(s).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+function msgQuand(s) {
+  const d = msgDate(s), now = new Date();
+  if (d.toDateString() === now.toDateString()) return msgHeure(s);
+  const hier = new Date(now); hier.setDate(now.getDate() - 1);
+  if (d.toDateString() === hier.toDateString()) return 'Hier';
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+}
+function msgJour(s) {
+  const d = msgDate(s), now = new Date();
+  if (d.toDateString() === now.toDateString()) return "Aujourd'hui";
+  const hier = new Date(now); hier.setDate(now.getDate() - 1);
+  if (d.toDateString() === hier.toDateString()) return 'Hier';
+  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+}
+const initiales = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map(x => x[0] || '').join('').toUpperCase() || '?';
+const convAutres = (c) => (c.membres || []).filter(m => m.id !== S.user.id);
+const convEnLigne = (c) => c.type === 'direct' && convAutres(c).some(m => m.enLigne);
+
+// Après une coupure WebSocket : récupère ce qui a été manqué.
+async function resynchroniserMessagerie() {
+  rafraichirNonLus();
+  if (S.page !== 'messagerie' || !$('msgList')) return;
+  try { MSG.convs = await api('/messagerie/conversations'); } catch { return; }
+  renderConvList();
+  const id = MSG.actif; if (!id) return;
+  try {
+    const data = await api('/messagerie/conversations/' + id + '/messages');
+    if (MSG.actif !== id) return;
+    const nouveaux = data.messages.filter(m => !MSG.messages.some(x => x.id === m.id));
+    const dernierLocal = MSG.messages.length ? MSG.messages[MSG.messages.length - 1].id : 0;
+    // Trop de messages manqués : on repart de la dernière page (« charger plus » remonte le reste).
+    if (data.plus && data.messages.length && data.messages[0].id > dernierLocal) {
+      MSG.messages = data.messages; MSG.plus = data.plus;
+    } else {
+      MSG.messages.push(...nouveaux); MSG.messages.sort((a, b) => a.id - b.id);
+    }
+    MSG.lectures = data.lectures;
+    renderMessages(nouveaux.length > 0);
+    if (nouveaux.some(m => m.auteurId !== S.user.id) && !document.hidden) marquerLu(id);
+  } catch {}
+}
+
+async function rafraichirNonLus() {
+  try {
+    const { nonLus } = await api('/messagerie/non-lus');
+    const b = $('msgBadge'); if (!b) return;
+    b.textContent = nonLus > 99 ? '99+' : nonLus;
+    b.classList.toggle('hidden', !nonLus);
+  } catch {}
+}
+
+async function pageMessagerie() {
+  $('pageTitle').textContent = 'Messagerie';
+  $('content').innerHTML = `<div class="msg-wrap" id="msgWrap">
+    <div class="msg-side">
+      <div class="msg-side-head">
+        <input id="msgFiltre" placeholder="🔎 Rechercher une conversation…">
+        <button class="btn sec" id="msgNew" title="Nouvelle conversation">＋ Nouveau</button>
+      </div>
+      <div class="msg-list" id="msgList"><div class="hint" style="padding:14px">Chargement…</div></div>
+    </div>
+    <div class="msg-thread" id="msgThread">
+      <div class="msg-empty">💬<br>Sélectionnez une conversation ou démarrez-en une nouvelle.</div>
+    </div></div>`;
+  $('msgNew').onclick = nouvelleConversationModal;
+  $('msgFiltre').oninput = renderConvList;
+  try { MSG.convs = await api('/messagerie/conversations'); } catch (e) { toast(e.message, true); MSG.convs = []; }
+  renderConvList();
+  if (MSG.actif) ouvrirConversation(MSG.actif);
+}
+
+function renderConvList() {
+  const box = $('msgList'); if (!box) return;
+  const q = ($('msgFiltre')?.value || '').trim().toLowerCase();
+  const rows = MSG.convs.filter(c => !q || c.titre.toLowerCase().includes(q)
+    || (c.membres || []).some(m => (m.fullName || '').toLowerCase().includes(q)));
+  if (!rows.length) {
+    box.innerHTML = `<div class="hint" style="padding:14px">${q ? 'Aucun résultat.'
+      : 'Aucune conversation. Cliquez sur « ＋ Nouveau » pour écrire à un collègue, un fournisseur ou au support mGlobal.'}</div>`;
+    return;
+  }
+  box.innerHTML = rows.map(c => {
+    const d = c.dernier;
+    const apercu = d ? `${d.auteur_id === S.user.id ? 'Vous : ' : (c.type === 'groupe' ? esc(d.auteur) + ' : ' : '')}${esc(d.contenu.slice(0, 80))}`
+      : '<i>Aucun message</i>';
+    return `<button class="msg-item ${c.id === MSG.actif ? 'active' : ''} ${c.nonLus ? 'unread' : ''}" data-id="${c.id}">
+      <span class="msg-avatar ${c.type}">${c.type === 'groupe' ? '👥' : esc(initiales(c.titre))}${convEnLigne(c) ? '<i class="msg-online"></i>' : ''}</span>
+      <span class="msg-item-body">
+        <span class="msg-item-top"><b>${esc(c.titre)}</b><small>${d ? msgQuand(d.created_at) : ''}</small></span>
+        <span class="msg-item-bot"><span class="msg-apercu">${apercu}</span>${c.nonLus ? `<span class="nav-badge">${c.nonLus}</span>` : ''}</span>
+      </span></button>`;
+  }).join('');
+  box.querySelectorAll('.msg-item').forEach(b => b.onclick = () => ouvrirConversation(Number(b.dataset.id)));
+}
+
+function majConversation(conv) {
+  if (!conv) return;
+  const i = MSG.convs.findIndex(c => c.id === conv.id);
+  if (i >= 0) MSG.convs.splice(i, 1);
+  MSG.convs.unshift(conv);
+  MSG.convs.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)) || b.id - a.id);
+}
+
+async function ouvrirConversation(id) {
+  viderPieces();
+  MSG.actif = id; MSG.messages = []; MSG.lectures = []; MSG.ecrit = {};
+  renderConvList();
+  $('msgWrap')?.classList.add('open');
+  const t = $('msgThread'); if (!t) return;
+  t.innerHTML = '<div class="msg-empty">Chargement…</div>';
+  try {
+    const [conv, data] = await Promise.all([
+      api('/messagerie/conversations/' + id), api('/messagerie/conversations/' + id + '/messages')]);
+    if (MSG.actif !== id) return;
+    majConversation(conv);
+    MSG.messages = data.messages; MSG.lectures = data.lectures; MSG.plus = data.plus;
+    renderThread(conv);
+    marquerLu(id);
+  } catch (e) { toast(e.message, true); t.innerHTML = `<div class="msg-empty">${esc(e.message)}</div>`; }
+}
+
+function renderThread(conv) {
+  const t = $('msgThread'); if (!t) return;
+  const autres = convAutres(conv);
+  const statut = conv.type === 'groupe'
+    ? `${conv.membres.length} membres · ${autres.filter(m => m.enLigne).length} en ligne`
+    : (autres[0] ? `${ROLE_LABEL[autres[0].role] || autres[0].role}${autres[0].distributeur ? ' · ' + esc(autres[0].distributeur) : ''} · ${autres[0].enLigne ? '<span class="msg-on">● en ligne</span>' : 'hors ligne'}` : '');
+  t.innerHTML = `
+    <div class="msg-head">
+      <button class="btn sec msg-back" id="msgBack">←</button>
+      <span class="msg-avatar ${conv.type}">${conv.type === 'groupe' ? '👥' : esc(initiales(conv.titre))}${convEnLigne(conv) ? '<i class="msg-online"></i>' : ''}</span>
+      <div class="msg-head-info"><b>${esc(conv.titre)}</b><small id="msgStatut">${statut}</small></div>
+      ${conv.type === 'groupe' ? `<button class="btn sec" id="msgMembres" title="${esc(conv.membres.map(m => m.fullName).join(', '))}">＋ Membres</button>
+        <button class="btn danger" id="msgQuitter">Quitter</button>` : ''}
+    </div>
+    <div class="msg-body" id="msgBody"></div>
+    <div class="msg-typing" id="msgTyping"></div>
+    <form class="msg-compose" id="msgForm">
+      <input type="file" id="msgFile" multiple hidden>
+      <button class="btn sec msg-ico" type="button" id="msgJoindre" title="Joindre un fichier (10 Mo max.)">📎</button>
+      <textarea id="msgInput" rows="1" maxlength="4000" placeholder="Écrire un message… (Entrée pour envoyer, Maj+Entrée pour un retour à la ligne)"></textarea>
+      <button class="btn sec msg-ico" type="button" id="msgMicro" title="Message vocal (3 min max.)">🎤</button>
+      <button class="btn" type="submit" id="msgSend">Envoyer ➤</button>
+    </form>
+    <div class="msg-rec hidden" id="msgRec">
+      <span class="msg-rec-dot"></span><span class="grow">Enregistrement… <b id="msgRecTemps">0:00</b> / 3:00</span>
+      <button class="btn sec" type="button" id="msgRecAnnuler">✕ Annuler</button>
+      <button class="btn" type="button" id="msgRecEnvoyer">Envoyer ➤</button>
+    </div>`;
+  $('msgBack').onclick = () => { MSG.actif = null; $('msgWrap')?.classList.remove('open'); renderConvList(); };
+  if ($('msgMembres')) $('msgMembres').onclick = () => ajouterMembresModal(conv);
+  if ($('msgQuitter')) $('msgQuitter').onclick = () => quitterGroupe(conv);
+  const input = $('msgInput');
+  input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); envoyerMessage(); } };
+  input.oninput = () => {
+    input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+    const now = Date.now();
+    if (now - MSG.dernierEcrit > 2000 && S.ws?.readyState === 1) {
+      MSG.dernierEcrit = now;
+      S.ws.send(JSON.stringify({ type: 'msg:ecrit', conversationId: conv.id }));
+    }
+  };
+  $('msgForm').onsubmit = (e) => { e.preventDefault(); envoyerMessage(); };
+  $('msgJoindre').onclick = () => $('msgFile').click();
+  $('msgFile').onchange = (e) => { const f = [...e.target.files]; e.target.value = ''; envoyerFichiers(f); };
+  $('msgMicro').onclick = demarrerVocal;
+  $('msgRecAnnuler').onclick = () => arreterVocal(false);
+  $('msgRecEnvoyer').onclick = () => arreterVocal(true);
+  t.ondragover = (e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); };
+  t.ondrop = (e) => { if (!e.dataTransfer?.files?.length) return; e.preventDefault(); envoyerFichiers([...e.dataTransfer.files]); };
+  if (REC) afficherEnregistrement(true);
+  renderMessages(true);
+  input.focus();
+}
+
+function renderMessages(defiler = false) {
+  const body = $('msgBody'); if (!body) return;
+  const conv = MSG.convs.find(c => c.id === MSG.actif);
+  const proche = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  let html = MSG.plus ? '<div class="msg-more"><button class="btn sec" id="msgPlus">Messages précédents</button></div>' : '';
+  if (!MSG.messages.length) html += '<div class="msg-empty small">Aucun message. Dites bonjour 👋</div>';
+  let jour = '';
+  const mesIds = MSG.messages.filter(m => m.auteurId === S.user.id).map(m => m.id);
+  const dernierMien = mesIds.length ? mesIds[mesIds.length - 1] : 0;
+  for (const m of MSG.messages) {
+    const j = msgJour(m.createdAt);
+    if (j !== jour) { jour = j; html += `<div class="msg-day"><span>${esc(j)}</span></div>`; }
+    const mien = m.auteurId === S.user.id;
+    let vu = '';
+    if (mien && m.id === dernierMien) {
+      const n = MSG.lectures.filter(l => l.dernierLuId >= m.id && m.id > (l.depuisId || 0)).length;
+      vu = n ? (conv?.type === 'groupe' ? `✓✓ Vu par ${n}` : '✓✓ Vu') : '✓ Envoyé';
+    }
+    html += `<div class="msg-row ${mien ? 'me' : ''}">
+      <div class="msg-bubble">
+        ${!mien && conv?.type === 'groupe' ? `<div class="msg-author">${esc(m.auteur)}</div>` : ''}
+        ${m.piece ? `<div class="msg-piece">${pieceHtml(m)}</div>` : `<div class="msg-text">${esc(m.contenu).replace(/\n/g, '<br>')}</div>`}
+        <div class="msg-time">${msgHeure(m.createdAt)}</div>
+      </div>${vu ? `<div class="msg-vu">${vu}</div>` : ''}</div>`;
+  }
+  // Les pièces déjà chargées sont réutilisées (pas de rechargement, lecture audio non interrompue).
+  const cle = (n) => n.tagName + n.dataset.piece;
+  const anciennes = new Map([...body.querySelectorAll('[data-piece]')].map(n => [cle(n), n]));
+  body.innerHTML = html;
+  for (const n of body.querySelectorAll('[data-piece]')) {
+    const a = anciennes.get(cle(n));
+    if (a) n.replaceWith(a); else hydraterPiece(n, body);
+  }
+  if ($('msgPlus')) $('msgPlus').onclick = chargerPlus;
+  if (defiler || proche) body.scrollTop = body.scrollHeight;
+}
+
+async function chargerPlus() {
+  const id = MSG.actif; if (!id || !MSG.messages.length) return;
+  const body = $('msgBody'); const avant = body.scrollHeight;
+  try {
+    const d = await api(`/messagerie/conversations/${id}/messages?avant=${MSG.messages[0].id}`);
+    if (MSG.actif !== id) return;
+    MSG.messages = [...d.messages, ...MSG.messages]; MSG.plus = d.plus;
+    renderMessages();
+    body.scrollTop = body.scrollHeight - avant;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function envoyerMessage() {
+  const input = $('msgInput'); const id = MSG.actif;
+  const contenu = (input?.value || '').trim();
+  if (!contenu || !id) return;
+  input.value = ''; input.style.height = 'auto';
+  try {
+    const m = await api(`/messagerie/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify({ contenu }) });
+    ajouterMessage(m);
+  } catch (e) { toast(e.message, true); input.value = contenu; }
+}
+
+/* ── Pièces jointes et messages vocaux ── */
+const MAX_PIECE = 10 * 1024 * 1024;
+const MAX_VOCAL_S = 180;
+const PIECES = new Map();
+let REC = null;
+const tailleLisible = (o) => o < 1048576 ? `${Math.max(1, Math.round(o / 1024))} Ko` : `${(o / 1048576).toFixed(1)} Mo`;
+const dureeLisible = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+function pieceHtml(m) {
+  const p = m.piece;
+  const lien = `<a class="msg-file" href="#" data-piece="${m.id}" data-nom="${esc(p.nom)}">📎 <span>${esc(p.nom)}</span><small>${tailleLisible(p.taille || 0)}</small></a>`;
+  const lisible = (p.type || '').startsWith('audio/') && document.createElement('audio').canPlayType(p.type) !== '';
+  if (p.vocal && lisible)
+    return `<audio controls preload="metadata" data-piece="${m.id}"></audio><small class="msg-dur">🎤 ${dureeLisible(p.duree || 0)}</small>`;
+  if (lisible) return `<audio controls preload="metadata" data-piece="${m.id}"></audio>${lien}`;
+  if (/^image\/(png|jpeg|gif|webp)$/.test(p.type || ''))
+    return `<img class="msg-img" alt="${esc(p.nom)}" title="${esc(p.nom)}" data-piece="${m.id}">`;
+  return lien;
+}
+
+function urlPiece(id) {
+  if (!PIECES.has(id)) {
+    PIECES.set(id, fetch('/api/messagerie/pieces/' + id, { headers: { Authorization: 'Bearer ' + S.token } })
+      .then(r => { if (!r.ok) throw new Error('Fichier indisponible'); return r.blob(); })
+      .then(b => URL.createObjectURL(b))
+      .catch(e => { PIECES.delete(id); throw e; }));
+  }
+  return PIECES.get(id);
+}
+
+// Libère les fichiers chargés (blob:) de la conversation précédente.
+function viderPieces() {
+  for (const p of PIECES.values()) p.then(u => URL.revokeObjectURL(u), () => {});
+  PIECES.clear();
+}
+
+function hydraterPiece(n, body) {
+  const id = n.dataset.piece;
+  if (n.tagName === 'A') {
+    n.onclick = async (e) => {
+      e.preventDefault();
+      try { const a = document.createElement('a'); a.href = await urlPiece(id); a.download = n.dataset.nom || 'fichier'; a.click(); }
+      catch (err) { toast(err.message, true); }
+    };
+    return;
+  }
+  const enBas = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  urlPiece(id).then(u => {
+    if (n.tagName === 'IMG') {
+      n.onload = () => { if (enBas) body.scrollTop = body.scrollHeight; };
+      n.onclick = () => window.open(u, '_blank');
+    }
+    n.src = u;
+  }).catch(() => n.replaceWith(el('<span class="hint">Fichier indisponible</span>')));
+}
+
+async function envoyerPiece(blob, nom, duree, id) {
+  if (!id || !blob?.size) return;
+  if (blob.size > MAX_PIECE) return toast(`« ${nom} » dépasse 10 Mo`, true);
+  const headers = { 'Content-Type': 'application/octet-stream', 'X-Type-Fichier': blob.type || 'application/octet-stream',
+    'X-Nom-Fichier': encodeURIComponent(nom), Authorization: 'Bearer ' + S.token };
+  if (duree != null) headers['X-Duree'] = String(duree);
+  const statut = MSG.actif === id ? $('msgTyping') : null; if (statut) statut.textContent = `Envoi de ${nom}…`;
+  try {
+    const res = await fetch(`/api/messagerie/conversations/${id}/pieces`, { method: 'POST', headers, body: blob });
+    if (res.status === 401) { logout(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Envoi impossible');
+    ajouterMessage(data);
+  } catch (e) { toast(e.message, true); }
+  finally { renderEcrit(); }
+}
+
+async function envoyerFichiers(fichiers) {
+  const id = MSG.actif;   // fixée au départ : changer de conversation ne redirige pas les fichiers suivants
+  for (const f of fichiers) await envoyerPiece(f, f.name, null, id);
+}
+
+function afficherEnregistrement(on) {
+  $('msgForm')?.classList.toggle('hidden', on);
+  $('msgRec')?.classList.toggle('hidden', !on);
+  if (on && REC && $('msgRecTemps')) $('msgRecTemps').textContent = dureeLisible(Math.floor((Date.now() - REC.debut) / 1000));
+}
+
+async function demarrerVocal() {
+  if (REC) return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder)
+    return toast('Enregistrement audio non pris en charge par ce navigateur', true);
+  let flux;
+  try { flux = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { return toast('Accès au micro refusé', true); }
+  const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(t => MediaRecorder.isTypeSupported(t));
+  const rec = new MediaRecorder(flux, mime ? { mimeType: mime } : undefined);
+  const morceaux = [];
+  const r = REC = { rec, flux, debut: Date.now(), conv: MSG.actif, envoyer: false };
+  rec.ondataavailable = (e) => { if (e.data.size) morceaux.push(e.data); };
+  rec.onstop = () => {
+    flux.getTracks().forEach(t => t.stop());
+    clearInterval(r.timer); REC = null; afficherEnregistrement(false);
+    if (!r.envoyer || r.conv !== MSG.actif) return;
+    const duree = Math.min(MAX_VOCAL_S, Math.round((Date.now() - r.debut) / 1000));
+    const type = (rec.mimeType || 'audio/webm').split(';')[0];
+    const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+    envoyerPiece(new Blob(morceaux, { type }), `vocal-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.${ext}`, duree, r.conv);
+  };
+  rec.start(1000);
+  r.timer = setInterval(() => {
+    // Conversation quittée ou page changée : on abandonne l'enregistrement.
+    if (!$('msgRec') || MSG.actif !== r.conv) return arreterVocal(false);
+    const s = Math.floor((Date.now() - r.debut) / 1000);
+    if ($('msgRecTemps')) $('msgRecTemps').textContent = dureeLisible(s);
+    if (s >= MAX_VOCAL_S) arreterVocal(true);
+  }, 250);
+  afficherEnregistrement(true);
+}
+
+function arreterVocal(envoyer) {
+  if (!REC) return;
+  REC.envoyer = envoyer;
+  if (REC.rec.state !== 'inactive') REC.rec.stop();
+}
+
+function ajouterMessage(m) {
+  if (m.conversationId !== MSG.actif || MSG.messages.some(x => x.id === m.id)) return;
+  MSG.messages.push(m);
+  delete MSG.ecrit[m.auteurId];
+  renderEcrit();
+  renderMessages(m.auteurId === S.user.id);
+}
+
+async function marquerLu(id) {
+  const c = MSG.convs.find(x => x.id === id);
+  if (c) { c.nonLus = 0; renderConvList(); }
+  try { await api(`/messagerie/conversations/${id}/lu`, { method: 'POST' }); } catch {}
+  rafraichirNonLus();
+}
+
+function renderEcrit() {
+  const t = $('msgTyping'); if (!t) return;
+  const noms = Object.values(MSG.ecrit).map(x => x.nom);
+  t.textContent = noms.length ? `${noms.join(', ')} ${noms.length > 1 ? 'écrivent' : 'écrit'}…` : '';
+}
+
+function onMessagerieEvent(m) {
+  if (!S.user) return;
+  if (m.type === 'msg:nouveau') {
+    majConversation(m.conversation);
+    const ici = S.page === 'messagerie' && MSG.actif === m.message.conversationId;
+    if (ici) {
+      ajouterMessage(m.message);
+      if (m.message.auteurId !== S.user.id && !document.hidden) marquerLu(MSG.actif);
+    } else if (m.message.auteurId !== S.user.id) {
+      notifierMessage(m.message, m.conversation);
+    }
+    if (S.page === 'messagerie') renderConvList();
+    rafraichirNonLus();
+  } else if (m.type === 'conv:nouvelle' || m.type === 'conv:maj') {
+    if (m.conversation) majConversation(m.conversation);
+    if (S.page === 'messagerie') {
+      renderConvList();
+      if (m.conversation?.id === MSG.actif && m.type === 'conv:maj') {
+        const saisie = $('msgInput')?.value || '';
+        renderThread(m.conversation);
+        if ($('msgInput')) $('msgInput').value = saisie;
+      }
+    }
+    rafraichirNonLus();
+  } else if (m.type === 'msg:lu') {
+    if (m.conversationId !== MSG.actif) return;
+    const l = MSG.lectures.find(x => x.userId === m.userId);
+    if (l) l.dernierLuId = m.dernierLuId;
+    else MSG.lectures.push({ userId: m.userId, dernierLuId: m.dernierLuId, depuisId: m.depuisId || 0 });
+    renderMessages();
+  } else if (m.type === 'msg:ecrit') {
+    if (m.conversationId !== MSG.actif) return;
+    const conv = MSG.convs.find(c => c.id === m.conversationId);
+    const nom = conv?.membres.find(x => x.id === m.userId)?.fullName || m.nom;
+    clearTimeout(MSG.ecrit[m.userId]?.t);
+    MSG.ecrit[m.userId] = { nom, t: setTimeout(() => { delete MSG.ecrit[m.userId]; renderEcrit(); }, 3500) };
+    renderEcrit();
+  } else if (m.type === 'presence') {
+    for (const c of MSG.convs) for (const mb of c.membres || []) if (mb.id === m.userId) mb.enLigne = m.enLigne;
+    if (S.page === 'messagerie') {
+      renderConvList();
+      const conv = MSG.convs.find(c => c.id === MSG.actif);
+      if (conv && conv.membres.some(x => x.id === m.userId)) {
+        const saisie = $('msgInput')?.value || '';
+        renderThread(conv);
+        if ($('msgInput')) $('msgInput').value = saisie;
+      }
+    }
+  }
+}
+
+function notifierMessage(message, conv) {
+  const t = el(`<div class="toast msg-toast">💬 <b>${esc(message.auteur)}</b>${conv?.type === 'groupe' ? ' · ' + esc(conv.titre) : ''}<br>${esc(message.contenu.slice(0, 120))}</div>`);
+  t.onclick = () => { t.remove(); MSG.actif = message.conversationId; go('messagerie'); };
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 5000);
+}
+
+async function nouvelleConversationModal() {
+  let contacts = [];
+  try { contacts = await api('/messagerie/contacts'); } catch (e) { return toast(e.message, true); }
+  const ligne = (u, coche) => `<label class="msg-contact" data-q="${esc((u.fullName + ' ' + u.username + ' ' + (u.distributeur || '')).toLowerCase())}">
+    ${coche ? `<input type="checkbox" value="${u.id}">` : ''}
+    <span class="msg-avatar">${esc(initiales(u.fullName))}${u.enLigne ? '<i class="msg-online"></i>' : ''}</span>
+    <span><b>${esc(u.fullName)}</b><small>${esc(ROLE_LABEL[u.role] || u.role)}${u.distributeur ? ' · ' + esc(u.distributeur) : ''}</small></span>
+    ${coche ? '' : `<button class="btn sec" data-uid="${u.id}">Écrire</button>`}</label>`;
+  $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+    <div class="modal"><div class="modal-head"><h3>Nouvelle conversation</h3>
+      <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="msg-tabs"><button class="active" data-t="direct">👤 Message direct</button><button data-t="groupe">👥 Groupe</button></div>
+        <input id="ncFiltre" placeholder="🔎 Rechercher un contact…">
+        <div id="ncGroupe" class="hidden"><label>Nom du groupe</label><input id="ncTitre" maxlength="120" placeholder="Ex : Équipe livraisons"></div>
+        <div class="msg-contacts" id="ncDirect">${contacts.map(u => ligne(u, false)).join('') || '<div class="hint">Aucun contact disponible.</div>'}</div>
+        <div class="msg-contacts hidden" id="ncMembres">${contacts.map(u => ligne(u, true)).join('')}</div>
+        <div class="actions hidden" id="ncActions"><button class="btn" id="ncCreer" style="width:auto">Créer le groupe</button></div>
+      </div></div></div>`;
+  const host = $('modalHost');
+  host.querySelectorAll('.msg-tabs button').forEach(b => b.onclick = () => {
+    host.querySelectorAll('.msg-tabs button').forEach(x => x.classList.toggle('active', x === b));
+    const g = b.dataset.t === 'groupe';
+    ['ncGroupe', 'ncMembres', 'ncActions'].forEach(i => $(i).classList.toggle('hidden', !g));
+    $('ncDirect').classList.toggle('hidden', g);
+  });
+  $('ncFiltre').oninput = () => {
+    const q = $('ncFiltre').value.trim().toLowerCase();
+    host.querySelectorAll('.msg-contact').forEach(x => x.classList.toggle('hidden', !!q && !x.dataset.q.includes(q)));
+  };
+  host.querySelectorAll('[data-uid]').forEach(b => b.onclick = async (e) => {
+    e.preventDefault();
+    try {
+      const conv = await api('/messagerie/conversations', { method: 'POST',
+        body: JSON.stringify({ type: 'direct', userId: Number(b.dataset.uid) }) });
+      document.querySelector('.modal-bg')?.remove();
+      majConversation(conv); ouvrirConversation(conv.id);
+    } catch (err) { toast(err.message, true); }
+  });
+  $('ncCreer').onclick = async () => {
+    const membres = [...host.querySelectorAll('#ncMembres input:checked')].map(i => Number(i.value));
+    try {
+      const conv = await api('/messagerie/conversations', { method: 'POST',
+        body: JSON.stringify({ type: 'groupe', titre: $('ncTitre').value, membres }) });
+      document.querySelector('.modal-bg')?.remove();
+      majConversation(conv); ouvrirConversation(conv.id);
+    } catch (err) { toast(err.message, true); }
+  };
+}
+
+async function ajouterMembresModal(conv) {
+  let contacts = [];
+  try { contacts = await api('/messagerie/contacts'); } catch (e) { return toast(e.message, true); }
+  const deja = new Set(conv.membres.map(m => m.id));
+  const dispo = contacts.filter(u => !deja.has(u.id));
+  $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+    <div class="modal"><div class="modal-head"><h3>Membres — ${esc(conv.titre)}</h3>
+      <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="hint">Membres actuels : ${conv.membres.map(m => esc(m.fullName)).join(', ')}</div>
+        <div class="msg-contacts" style="margin-top:10px">${dispo.map(u => `<label class="msg-contact"><input type="checkbox" value="${u.id}">
+          <span class="msg-avatar">${esc(initiales(u.fullName))}</span>
+          <span><b>${esc(u.fullName)}</b><small>${esc(ROLE_LABEL[u.role] || u.role)}${u.distributeur ? ' · ' + esc(u.distributeur) : ''}</small></span></label>`).join('')
+          || '<div class="hint">Tous vos contacts sont déjà membres.</div>'}</div>
+        <div class="actions"><button class="btn" id="amGo" style="width:auto">Ajouter</button></div>
+      </div></div></div>`;
+  $('amGo').onclick = async () => {
+    const userIds = [...$('modalHost').querySelectorAll('input:checked')].map(i => Number(i.value));
+    if (!userIds.length) return toast('Sélectionnez au moins un contact', true);
+    try {
+      const c = await api(`/messagerie/conversations/${conv.id}/membres`, { method: 'POST', body: JSON.stringify({ userIds }) });
+      document.querySelector('.modal-bg')?.remove();
+      majConversation(c); renderConvList(); renderThread(c);
+      toast('Membres ajoutés');
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+async function quitterGroupe(conv) {
+  if (!confirm(`Quitter le groupe « ${conv.titre} » ?`)) return;
+  try {
+    await api(`/messagerie/conversations/${conv.id}/membres/moi`, { method: 'DELETE' });
+    MSG.convs = MSG.convs.filter(c => c.id !== conv.id);
+    MSG.actif = null; pageMessagerie();
   } catch (e) { toast(e.message, true); }
 }
 

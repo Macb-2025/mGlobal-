@@ -7,6 +7,7 @@ import { customAlphabet } from 'nanoid';
 import { requireAuth, denySuperadmin, denyFournisseur, requireEspaceActif, requireRole } from '../lib/auth.js';
 import { factureHtml } from '../lib/facture.js';
 import { signerBon } from '../lib/signature.js';
+import { supprimerConversationsVides } from '../lib/messagerie.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'public', 'uploads');
@@ -104,6 +105,7 @@ r.put('/fournisseurs/:id', (req, res) => {
 r.delete('/fournisseurs/:id', (req, res) => {
   const info = db.prepare(`DELETE FROM fournisseurs WHERE id = ? AND distributeur_id = ?`).run(req.params.id, did(req));
   if (!info.changes) return res.status(404).json({ error: 'Fournisseur introuvable' });
+  supprimerConversationsVides();   // ses comptes (ON DELETE CASCADE) quittent leurs conversations
   res.json({ ok: true });
 });
 
