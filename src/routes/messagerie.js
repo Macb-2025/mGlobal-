@@ -19,7 +19,7 @@ r.use((req, res, next) => utilisateurActif(req.user.uid) ? next() : res.status(4
 const MAX_MESSAGE = 4000;
 const MAX_PIECE = 10 * 1024 * 1024;   // 10 Mo par fichier / message vocal
 const MAX_VOCAL_S = 180;
-const PIECES_DIR = path.join(DATA_DIR, 'messagerie');
+const PIECES_DIR = path.resolve(DATA_DIR, 'messagerie');
 fs.mkdirSync(PIECES_DIR, { recursive: true });
 // Types affichables directement (aperçu image, lecteur audio) ; le reste est servi en téléchargement.
 const TYPES_INLINE = /^(image\/(png|jpeg|gif|webp)|audio\/(webm|ogg|mp4|mpeg|wav|x-m4a|aac))$/;
