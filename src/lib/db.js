@@ -317,6 +317,7 @@ CREATE TABLE IF NOT EXISTS conversation_membres (
   conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
   user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   dernier_lu_id   INTEGER NOT NULL DEFAULT 0,  -- id du dernier message lu
+  rejoint_apres_id INTEGER NOT NULL DEFAULT 0, -- dernier message existant à l'arrivée dans le groupe
   joined_at       TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (conversation_id, user_id)
 );
@@ -344,6 +345,7 @@ function addColumn(table, col, ddl) {
   }
 }
 addColumn('distributeurs', 'gele', 'gele INTEGER NOT NULL DEFAULT 0');
+addColumn('conversation_membres', 'rejoint_apres_id', 'rejoint_apres_id INTEGER NOT NULL DEFAULT 0');
 // Compte fournisseur (rôle 'fournisseur') rattaché à une entité fournisseur.
 addColumn('users', 'fournisseur_id', 'fournisseur_id INTEGER REFERENCES fournisseurs(id) ON DELETE CASCADE');
 addColumn('bons_commande', 'numero', 'numero INTEGER');

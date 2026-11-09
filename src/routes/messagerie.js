@@ -154,7 +154,7 @@ r.get('/conversations/:id/messages', (req, res) => {
   const rows = db.prepare(`SELECT m.id FROM messages m WHERE m.conversation_id = ? AND m.id < ?
     ORDER BY m.id DESC LIMIT ?`).all(id, avant, limit).map(x => messageVue(x.id)).reverse();
   // Lecture : position de lecture des autres membres (accusés « Vu »).
-  const lectures = db.prepare(`SELECT user_id AS userId, dernier_lu_id AS dernierLuId
+  const lectures = db.prepare(`SELECT user_id AS userId, dernier_lu_id AS dernierLuId, rejoint_apres_id AS depuisId
     FROM conversation_membres WHERE conversation_id = ? AND user_id != ?`).all(id, req.user.uid);
   res.json({ messages: rows, lectures, plus: rows.length === limit });
 });
@@ -186,7 +186,9 @@ r.post('/conversations/:id/lu', (req, res) => {
   db.prepare(`UPDATE conversation_membres SET dernier_lu_id = ? WHERE conversation_id = ? AND user_id = ?`)
     .run(max, id, req.user.uid);
   const autres = membresConversation(id).filter(u => u !== req.user.uid);
-  emitToUsers(autres, 'msg:lu', { conversationId: id, userId: req.user.uid, dernierLuId: max });
+  const { depuisId } = db.prepare(`SELECT rejoint_apres_id AS depuisId FROM conversation_membres
+    WHERE conversation_id = ? AND user_id = ?`).get(id, req.user.uid);
+  emitToUsers(autres, 'msg:lu', { conversationId: id, userId: req.user.uid, dernierLuId: max, depuisId });
   res.json({ ok: true, dernierLuId: max });
 });
 
@@ -203,9 +205,10 @@ r.post('/conversations/:id/membres', (req, res) => {
   const existants = actuels.map(utilisateurActif).filter(Boolean);
   if (!ids.length || users.some(u => !peutContacter(me, u)) || !groupeCompatible([...existants, ...nouveaux]))
     return res.status(403).json({ error: 'Participant non joignable' });
-  const add = db.prepare(`INSERT OR IGNORE INTO conversation_membres (conversation_id, user_id, dernier_lu_id)
-    VALUES (?, ?, (SELECT COALESCE(MAX(id), 0) FROM messages WHERE conversation_id = ?))`);
-  db.transaction(() => { for (const uid of ids) add.run(id, uid, id); })();
+  const add = db.prepare(`INSERT OR IGNORE INTO conversation_membres (conversation_id, user_id, dernier_lu_id, rejoint_apres_id)
+    VALUES (?, ?, ?, ?)`);
+  const max = db.prepare(`SELECT COALESCE(MAX(id), 0) m FROM messages WHERE conversation_id = ?`).get(id).m;
+  db.transaction(() => { for (const uid of ids) add.run(id, uid, max, max); })();
   notifierConversation(id);
   res.json(vueConversation(id, me.id));
 });

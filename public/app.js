@@ -1826,7 +1826,7 @@ function renderMessages(defiler = false) {
     const mien = m.auteurId === S.user.id;
     let vu = '';
     if (mien && m.id === dernierMien) {
-      const n = MSG.lectures.filter(l => l.dernierLuId >= m.id).length;
+      const n = MSG.lectures.filter(l => l.dernierLuId >= m.id && m.id > (l.depuisId || 0)).length;
       vu = n ? (conv?.type === 'groupe' ? `✓✓ Vu par ${n}` : '✓✓ Vu') : '✓ Envoyé';
     }
     html += `<div class="msg-row ${mien ? 'me' : ''}">
@@ -1912,7 +1912,8 @@ function onMessagerieEvent(m) {
   } else if (m.type === 'msg:lu') {
     if (m.conversationId !== MSG.actif) return;
     const l = MSG.lectures.find(x => x.userId === m.userId);
-    if (l) l.dernierLuId = m.dernierLuId; else MSG.lectures.push({ userId: m.userId, dernierLuId: m.dernierLuId });
+    if (l) l.dernierLuId = m.dernierLuId;
+    else MSG.lectures.push({ userId: m.userId, dernierLuId: m.dernierLuId, depuisId: m.depuisId || 0 });
     renderMessages();
   } else if (m.type === 'msg:ecrit') {
     if (m.conversationId !== MSG.actif) return;
