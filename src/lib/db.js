@@ -299,6 +299,38 @@ CREATE TABLE IF NOT EXISTS mouvements_stock (
 CREATE INDEX IF NOT EXISTS idx_mvt_dist ON mouvements_stock(distributeur_id);
 CREATE INDEX IF NOT EXISTS idx_mvt_prod ON mouvements_stock(produit_id);
 
+-- ════════════════════════════════════════════════════════════════════════
+--  MESSAGERIE interne : conversations directes (1-1) ou de groupe entre
+--  utilisateurs d'un distributeur, ses fournisseurs et le super-admin.
+-- ════════════════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS conversations (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  type            TEXT NOT NULL CHECK(type IN ('direct','groupe')),
+  titre           TEXT,
+  distributeur_id INTEGER REFERENCES distributeurs(id) ON DELETE CASCADE,
+  cree_par        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS conversation_membres (
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  dernier_lu_id   INTEGER NOT NULL DEFAULT 0,  -- id du dernier message lu
+  joined_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (conversation_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_cm_user ON conversation_membres(user_id);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  auteur_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  contenu         TEXT NOT NULL,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, id);
+
 INSERT OR IGNORE INTO live (id, connected, stable, kg, valeur, unite, ts)
 VALUES (1, 0, 0, 0, 0, 't', datetime('now'));
 `);

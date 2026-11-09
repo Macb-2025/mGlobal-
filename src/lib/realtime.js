@@ -2,6 +2,7 @@ import { WebSocketServer } from 'ws';
 import jwt from 'jsonwebtoken';
 import db from './db.js';
 import { JWT_SECRET } from './auth.js';
+import { peutContacter, estMembre, membresConversation } from './messagerie.js';
 
 // Hub temps réel : navigateurs (distributeurs) + postes pont bascule.
 // Permet de pousser instantanément : nouveaux bons de commande, changements de
@@ -18,7 +19,9 @@ function authClient(url) {
     const siteKey = q.get('siteKey');
     if (token) {
       const u = jwt.verify(token, JWT_SECRET);
-      return { kind: 'user', role: u.role, did: u.did || null, username: u.username };
+      const actif = db.prepare(`SELECT 1 FROM users WHERE id = ? AND actif = 1`).get(u.uid);
+      if (!actif) return null;
+      return { kind: 'user', uid: u.uid, role: u.role, did: u.did || null, username: u.username };
     }
     if (siteKey) {
       const site = db.prepare(`SELECT * FROM sites WHERE site_key = ? AND actif = 1`).get(siteKey);
@@ -37,6 +40,11 @@ export function initRealtime(server) {
     ws.isAlive = true;
     ws.on('pong', () => { ws.isAlive = true; });
     ws.send(JSON.stringify({ type: 'hello', kind: ctx.kind, ts: new Date().toISOString() }));
+    if (ctx.kind !== 'user') return;
+    const premiereConnexion = connexionsUtilisateur(ctx.uid) === 1;
+    if (premiereConnexion) emitPresence(ctx, true);
+    ws.on('message', (raw) => onUserMessage(ws, raw));
+    ws.on('close', () => { if (connexionsUtilisateur(ctx.uid) === 0) emitPresence(ctx, false); });
   });
 
   // Heartbeat : ferme les connexions mortes
@@ -78,4 +86,44 @@ export function emitToDistributeur(did, type, payload) {
 export function emitToAll(type, payload) {
   if (!wss) return;
   for (const ws of wss.clients) send(ws, { type, ...payload });
+}
+
+// ───────────── Messagerie : ciblage par utilisateur & présence ─────────────
+function connexionsUtilisateur(uid) {
+  let n = 0;
+  if (!wss) return n;
+  for (const ws of wss.clients)
+    if (ws.ctx?.kind === 'user' && ws.ctx.uid === uid && ws.readyState === 1) n++;
+  return n;
+}
+
+export const estEnLigne = (uid) => connexionsUtilisateur(uid) > 0;
+
+export function emitToUsers(userIds, type, payload) {
+  if (!wss || !userIds?.length) return;
+  const cible = new Set(userIds);
+  for (const ws of wss.clients)
+    if (ws.ctx?.kind === 'user' && cible.has(ws.ctx.uid)) send(ws, { type, ...payload });
+}
+
+// Présence (en ligne / hors ligne) diffusée aux seuls contacts autorisés.
+function emitPresence(ctx, enLigne) {
+  if (!wss) return;
+  const moi = { id: ctx.uid, role: ctx.role, distributeur_id: ctx.did };
+  for (const ws of wss.clients) {
+    const c = ws.ctx;
+    if (c?.kind !== 'user' || c.uid === ctx.uid) continue;
+    if (peutContacter(moi, { id: c.uid, role: c.role, distributeur_id: c.did }))
+      send(ws, { type: 'presence', userId: ctx.uid, enLigne });
+  }
+}
+
+// Messages entrants des navigateurs : indicateur « en train d'écrire ».
+function onUserMessage(ws, raw) {
+  let m; try { m = JSON.parse(raw.toString()); } catch { return; }
+  if (m?.type !== 'msg:ecrit') return;
+  const convId = Number(m.conversationId);
+  if (!convId || !estMembre(convId, ws.ctx.uid)) return;
+  const autres = membresConversation(convId).filter(u => u !== ws.ctx.uid);
+  emitToUsers(autres, 'msg:ecrit', { conversationId: convId, userId: ws.ctx.uid, nom: ws.ctx.username });
 }

@@ -116,8 +116,9 @@ function enterApp() {
   $('spaceName').textContent = u.distributeur ? u.distributeur.nom : 'Vue globale mGlobal';
   $('who').innerHTML = `<b>${esc(u.fullName || u.username)}</b><br>${ROLE_LABEL[u.role] || u.role}`;
   const nav = $('nav'); nav.innerHTML = '';
-  for (const m of menuFor(u.role)) {
-    const b = el(`<button data-page="${m.id}">${m.label}</button>`);
+  for (const m of [...menuFor(u.role), { id: 'messagerie', label: '💬 Messagerie' }]) {
+    const badge = m.id === 'messagerie' ? '<span class="nav-badge hidden" id="msgBadge"></span>' : '';
+    const b = el(`<button data-page="${m.id}">${m.label}${badge}</button>`);
     b.onclick = () => go(m.id);
     nav.appendChild(b);
   }
@@ -127,6 +128,7 @@ function enterApp() {
     : u.role === 'fournisseur' ? 'espaceFournisseur' : 'dashboard';
   go(accueil);
   connectWS();
+  rafraichirNonLus();
 }
 
 // Historique de navigation (pour le bouton « Retour »).
@@ -136,13 +138,14 @@ function go(page, fromBack = false) {
   S.page = page;
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   if (S.liveTimer) { clearInterval(S.liveTimer); S.liveTimer = null; }
+  if (page !== 'messagerie') MSG.actif = null;
   updateBackBtn();
   ({ dashboard: pageDashboard, suivi: pageSuivi, bons: pageBons, clients: pageClients,
      fournisseurs: pageFournisseurs, stock: pageStock, gros: pageGros,
      facturation: pageFacturation, relicat: pageRelicat, recherche: pageRecherche,
      compta: pageCompta, rapports: pageRapports, users: pageUsers, admin: pageAdmin,
      parametres: pageParametres, fournisseursComptes: pageFournisseursComptes,
-     espaceFournisseur: pageEspaceFournisseur }[page] || pageDashboard)();
+     espaceFournisseur: pageEspaceFournisseur, messagerie: pageMessagerie }[page] || pageDashboard)();
 }
 function goBack() {
   const prev = S.history.pop();
@@ -526,6 +529,7 @@ function connectWS() {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if ((m.type === 'bon:maj' || m.type === 'bon:nouveau' || m.type === 'bon:annule') && S.page === 'suivi') loadSuivi();
       if (m.type === 'live' && S.page === 'dashboard' && m.live) applyLive(m.live);
+      onMessagerieEvent(m);
     };
   } catch {}
 }
@@ -1644,6 +1648,362 @@ async function enregistrerLivraisonEF() {
       body: JSON.stringify({ produit_id, quantite, prix_unitaire, note: $('efNote').value }) });
     toast(r.message || 'Livraison enregistrée');
     pageEspaceFournisseur();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ───────────── Messagerie interne ───────────── */
+const MSG = { convs: [], actif: null, messages: [], lectures: [], plus: false, ecrit: {}, dernierEcrit: 0 };
+const msgDate = (s) => new Date(String(s || '').replace(' ', 'T') + (String(s).includes('Z') ? '' : 'Z'));
+const msgHeure = (s) => msgDate(s).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+function msgQuand(s) {
+  const d = msgDate(s), now = new Date();
+  if (d.toDateString() === now.toDateString()) return msgHeure(s);
+  const hier = new Date(now); hier.setDate(now.getDate() - 1);
+  if (d.toDateString() === hier.toDateString()) return 'Hier';
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+}
+function msgJour(s) {
+  const d = msgDate(s), now = new Date();
+  if (d.toDateString() === now.toDateString()) return "Aujourd'hui";
+  const hier = new Date(now); hier.setDate(now.getDate() - 1);
+  if (d.toDateString() === hier.toDateString()) return 'Hier';
+  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+}
+const initiales = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map(x => x[0] || '').join('').toUpperCase() || '?';
+const convAutres = (c) => (c.membres || []).filter(m => m.id !== S.user.id);
+const convEnLigne = (c) => c.type === 'direct' && convAutres(c).some(m => m.enLigne);
+
+async function rafraichirNonLus() {
+  try {
+    const { nonLus } = await api('/messagerie/non-lus');
+    const b = $('msgBadge'); if (!b) return;
+    b.textContent = nonLus > 99 ? '99+' : nonLus;
+    b.classList.toggle('hidden', !nonLus);
+  } catch {}
+}
+
+async function pageMessagerie() {
+  $('pageTitle').textContent = 'Messagerie';
+  $('content').innerHTML = `<div class="msg-wrap" id="msgWrap">
+    <div class="msg-side">
+      <div class="msg-side-head">
+        <input id="msgFiltre" placeholder="🔎 Rechercher une conversation…">
+        <button class="btn sec" id="msgNew" title="Nouvelle conversation">＋ Nouveau</button>
+      </div>
+      <div class="msg-list" id="msgList"><div class="hint" style="padding:14px">Chargement…</div></div>
+    </div>
+    <div class="msg-thread" id="msgThread">
+      <div class="msg-empty">💬<br>Sélectionnez une conversation ou démarrez-en une nouvelle.</div>
+    </div></div>`;
+  $('msgNew').onclick = nouvelleConversationModal;
+  $('msgFiltre').oninput = renderConvList;
+  try { MSG.convs = await api('/messagerie/conversations'); } catch (e) { toast(e.message, true); MSG.convs = []; }
+  renderConvList();
+  if (MSG.actif) ouvrirConversation(MSG.actif);
+}
+
+function renderConvList() {
+  const box = $('msgList'); if (!box) return;
+  const q = ($('msgFiltre')?.value || '').trim().toLowerCase();
+  const rows = MSG.convs.filter(c => !q || c.titre.toLowerCase().includes(q)
+    || (c.membres || []).some(m => (m.fullName || '').toLowerCase().includes(q)));
+  if (!rows.length) {
+    box.innerHTML = `<div class="hint" style="padding:14px">${q ? 'Aucun résultat.'
+      : 'Aucune conversation. Cliquez sur « ＋ Nouveau » pour écrire à un collègue, un fournisseur ou au support mGlobal.'}</div>`;
+    return;
+  }
+  box.innerHTML = rows.map(c => {
+    const d = c.dernier;
+    const apercu = d ? `${d.auteur_id === S.user.id ? 'Vous : ' : (c.type === 'groupe' ? esc(d.auteur) + ' : ' : '')}${esc(d.contenu.slice(0, 80))}`
+      : '<i>Aucun message</i>';
+    return `<button class="msg-item ${c.id === MSG.actif ? 'active' : ''} ${c.nonLus ? 'unread' : ''}" data-id="${c.id}">
+      <span class="msg-avatar ${c.type}">${c.type === 'groupe' ? '👥' : esc(initiales(c.titre))}${convEnLigne(c) ? '<i class="msg-online"></i>' : ''}</span>
+      <span class="msg-item-body">
+        <span class="msg-item-top"><b>${esc(c.titre)}</b><small>${d ? msgQuand(d.created_at) : ''}</small></span>
+        <span class="msg-item-bot"><span class="msg-apercu">${apercu}</span>${c.nonLus ? `<span class="nav-badge">${c.nonLus}</span>` : ''}</span>
+      </span></button>`;
+  }).join('');
+  box.querySelectorAll('.msg-item').forEach(b => b.onclick = () => ouvrirConversation(Number(b.dataset.id)));
+}
+
+function majConversation(conv) {
+  if (!conv) return;
+  const i = MSG.convs.findIndex(c => c.id === conv.id);
+  if (i >= 0) MSG.convs.splice(i, 1);
+  MSG.convs.unshift(conv);
+  MSG.convs.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)) || b.id - a.id);
+}
+
+async function ouvrirConversation(id) {
+  MSG.actif = id; MSG.messages = []; MSG.lectures = []; MSG.ecrit = {};
+  renderConvList();
+  $('msgWrap')?.classList.add('open');
+  const t = $('msgThread'); if (!t) return;
+  t.innerHTML = '<div class="msg-empty">Chargement…</div>';
+  try {
+    const [conv, data] = await Promise.all([
+      api('/messagerie/conversations/' + id), api('/messagerie/conversations/' + id + '/messages')]);
+    if (MSG.actif !== id) return;
+    majConversation(conv);
+    MSG.messages = data.messages; MSG.lectures = data.lectures; MSG.plus = data.plus;
+    renderThread(conv);
+    marquerLu(id);
+  } catch (e) { toast(e.message, true); t.innerHTML = `<div class="msg-empty">${esc(e.message)}</div>`; }
+}
+
+function renderThread(conv) {
+  const t = $('msgThread'); if (!t) return;
+  const autres = convAutres(conv);
+  const statut = conv.type === 'groupe'
+    ? `${conv.membres.length} membres · ${autres.filter(m => m.enLigne).length} en ligne`
+    : (autres[0] ? `${ROLE_LABEL[autres[0].role] || autres[0].role}${autres[0].distributeur ? ' · ' + esc(autres[0].distributeur) : ''} · ${autres[0].enLigne ? '<span class="msg-on">● en ligne</span>' : 'hors ligne'}` : '');
+  t.innerHTML = `
+    <div class="msg-head">
+      <button class="btn sec msg-back" id="msgBack">←</button>
+      <span class="msg-avatar ${conv.type}">${conv.type === 'groupe' ? '👥' : esc(initiales(conv.titre))}${convEnLigne(conv) ? '<i class="msg-online"></i>' : ''}</span>
+      <div class="msg-head-info"><b>${esc(conv.titre)}</b><small id="msgStatut">${statut}</small></div>
+      ${conv.type === 'groupe' ? `<button class="btn sec" id="msgMembres" title="${esc(conv.membres.map(m => m.fullName).join(', '))}">＋ Membres</button>
+        <button class="btn danger" id="msgQuitter">Quitter</button>` : ''}
+    </div>
+    <div class="msg-body" id="msgBody"></div>
+    <div class="msg-typing" id="msgTyping"></div>
+    <form class="msg-compose" id="msgForm">
+      <textarea id="msgInput" rows="1" maxlength="4000" placeholder="Écrire un message… (Entrée pour envoyer, Maj+Entrée pour un retour à la ligne)"></textarea>
+      <button class="btn" type="submit" id="msgSend">Envoyer ➤</button>
+    </form>`;
+  $('msgBack').onclick = () => { MSG.actif = null; $('msgWrap')?.classList.remove('open'); renderConvList(); };
+  if ($('msgMembres')) $('msgMembres').onclick = () => ajouterMembresModal(conv);
+  if ($('msgQuitter')) $('msgQuitter').onclick = () => quitterGroupe(conv);
+  const input = $('msgInput');
+  input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); envoyerMessage(); } };
+  input.oninput = () => {
+    input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+    const now = Date.now();
+    if (now - MSG.dernierEcrit > 2000 && S.ws?.readyState === 1) {
+      MSG.dernierEcrit = now;
+      S.ws.send(JSON.stringify({ type: 'msg:ecrit', conversationId: conv.id }));
+    }
+  };
+  $('msgForm').onsubmit = (e) => { e.preventDefault(); envoyerMessage(); };
+  renderMessages(true);
+  input.focus();
+}
+
+function renderMessages(defiler = false) {
+  const body = $('msgBody'); if (!body) return;
+  const conv = MSG.convs.find(c => c.id === MSG.actif);
+  const proche = body.scrollHeight - body.scrollTop - body.clientHeight < 80;
+  let html = MSG.plus ? '<div class="msg-more"><button class="btn sec" id="msgPlus">Messages précédents</button></div>' : '';
+  if (!MSG.messages.length) html += '<div class="msg-empty small">Aucun message. Dites bonjour 👋</div>';
+  let jour = '';
+  const mesIds = MSG.messages.filter(m => m.auteurId === S.user.id).map(m => m.id);
+  const dernierMien = mesIds.length ? mesIds[mesIds.length - 1] : 0;
+  for (const m of MSG.messages) {
+    const j = msgJour(m.createdAt);
+    if (j !== jour) { jour = j; html += `<div class="msg-day"><span>${esc(j)}</span></div>`; }
+    const mien = m.auteurId === S.user.id;
+    let vu = '';
+    if (mien && m.id === dernierMien) {
+      const n = MSG.lectures.filter(l => l.dernierLuId >= m.id).length;
+      vu = n ? (conv?.type === 'groupe' ? `✓✓ Vu par ${n}` : '✓✓ Vu') : '✓ Envoyé';
+    }
+    html += `<div class="msg-row ${mien ? 'me' : ''}">
+      <div class="msg-bubble">
+        ${!mien && conv?.type === 'groupe' ? `<div class="msg-author">${esc(m.auteur)}</div>` : ''}
+        <div class="msg-text">${esc(m.contenu).replace(/\n/g, '<br>')}</div>
+        <div class="msg-time">${msgHeure(m.createdAt)}</div>
+      </div>${vu ? `<div class="msg-vu">${vu}</div>` : ''}</div>`;
+  }
+  body.innerHTML = html;
+  if ($('msgPlus')) $('msgPlus').onclick = chargerPlus;
+  if (defiler || proche) body.scrollTop = body.scrollHeight;
+}
+
+async function chargerPlus() {
+  const id = MSG.actif; if (!id || !MSG.messages.length) return;
+  const body = $('msgBody'); const avant = body.scrollHeight;
+  try {
+    const d = await api(`/messagerie/conversations/${id}/messages?avant=${MSG.messages[0].id}`);
+    if (MSG.actif !== id) return;
+    MSG.messages = [...d.messages, ...MSG.messages]; MSG.plus = d.plus;
+    renderMessages();
+    body.scrollTop = body.scrollHeight - avant;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function envoyerMessage() {
+  const input = $('msgInput'); const id = MSG.actif;
+  const contenu = (input?.value || '').trim();
+  if (!contenu || !id) return;
+  input.value = ''; input.style.height = 'auto';
+  try {
+    const m = await api(`/messagerie/conversations/${id}/messages`, { method: 'POST', body: JSON.stringify({ contenu }) });
+    ajouterMessage(m);
+  } catch (e) { toast(e.message, true); input.value = contenu; }
+}
+
+function ajouterMessage(m) {
+  if (m.conversationId !== MSG.actif || MSG.messages.some(x => x.id === m.id)) return;
+  MSG.messages.push(m);
+  delete MSG.ecrit[m.auteurId];
+  renderEcrit();
+  renderMessages(m.auteurId === S.user.id);
+}
+
+async function marquerLu(id) {
+  const c = MSG.convs.find(x => x.id === id);
+  if (c) { c.nonLus = 0; renderConvList(); }
+  try { await api(`/messagerie/conversations/${id}/lu`, { method: 'POST' }); } catch {}
+  rafraichirNonLus();
+}
+
+function renderEcrit() {
+  const t = $('msgTyping'); if (!t) return;
+  const noms = Object.values(MSG.ecrit).map(x => x.nom);
+  t.textContent = noms.length ? `${noms.join(', ')} ${noms.length > 1 ? 'écrivent' : 'écrit'}…` : '';
+}
+
+function onMessagerieEvent(m) {
+  if (!S.user) return;
+  if (m.type === 'msg:nouveau') {
+    majConversation(m.conversation);
+    const ici = S.page === 'messagerie' && MSG.actif === m.message.conversationId;
+    if (ici) {
+      ajouterMessage(m.message);
+      if (m.message.auteurId !== S.user.id && !document.hidden) marquerLu(MSG.actif);
+    } else if (m.message.auteurId !== S.user.id) {
+      notifierMessage(m.message, m.conversation);
+    }
+    if (S.page === 'messagerie') renderConvList();
+    rafraichirNonLus();
+  } else if (m.type === 'conv:nouvelle' || m.type === 'conv:maj') {
+    if (m.conversation) majConversation(m.conversation);
+    if (S.page === 'messagerie') {
+      renderConvList();
+      if (m.conversation?.id === MSG.actif && m.type === 'conv:maj') {
+        const saisie = $('msgInput')?.value || '';
+        renderThread(m.conversation);
+        if ($('msgInput')) $('msgInput').value = saisie;
+      }
+    }
+    rafraichirNonLus();
+  } else if (m.type === 'msg:lu') {
+    if (m.conversationId !== MSG.actif) return;
+    const l = MSG.lectures.find(x => x.userId === m.userId);
+    if (l) l.dernierLuId = m.dernierLuId; else MSG.lectures.push({ userId: m.userId, dernierLuId: m.dernierLuId });
+    renderMessages();
+  } else if (m.type === 'msg:ecrit') {
+    if (m.conversationId !== MSG.actif) return;
+    const conv = MSG.convs.find(c => c.id === m.conversationId);
+    const nom = conv?.membres.find(x => x.id === m.userId)?.fullName || m.nom;
+    clearTimeout(MSG.ecrit[m.userId]?.t);
+    MSG.ecrit[m.userId] = { nom, t: setTimeout(() => { delete MSG.ecrit[m.userId]; renderEcrit(); }, 3500) };
+    renderEcrit();
+  } else if (m.type === 'presence') {
+    for (const c of MSG.convs) for (const mb of c.membres || []) if (mb.id === m.userId) mb.enLigne = m.enLigne;
+    if (S.page === 'messagerie') {
+      renderConvList();
+      const conv = MSG.convs.find(c => c.id === MSG.actif);
+      if (conv && conv.membres.some(x => x.id === m.userId)) {
+        const saisie = $('msgInput')?.value || '';
+        renderThread(conv);
+        if ($('msgInput')) $('msgInput').value = saisie;
+      }
+    }
+  }
+}
+
+function notifierMessage(message, conv) {
+  const t = el(`<div class="toast msg-toast">💬 <b>${esc(message.auteur)}</b>${conv?.type === 'groupe' ? ' · ' + esc(conv.titre) : ''}<br>${esc(message.contenu.slice(0, 120))}</div>`);
+  t.onclick = () => { t.remove(); MSG.actif = message.conversationId; go('messagerie'); };
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 5000);
+}
+
+async function nouvelleConversationModal() {
+  let contacts = [];
+  try { contacts = await api('/messagerie/contacts'); } catch (e) { return toast(e.message, true); }
+  const ligne = (u, coche) => `<label class="msg-contact" data-q="${esc((u.fullName + ' ' + u.username + ' ' + (u.distributeur || '')).toLowerCase())}">
+    ${coche ? `<input type="checkbox" value="${u.id}">` : ''}
+    <span class="msg-avatar">${esc(initiales(u.fullName))}${u.enLigne ? '<i class="msg-online"></i>' : ''}</span>
+    <span><b>${esc(u.fullName)}</b><small>${esc(ROLE_LABEL[u.role] || u.role)}${u.distributeur ? ' · ' + esc(u.distributeur) : ''}</small></span>
+    ${coche ? '' : `<button class="btn sec" data-uid="${u.id}">Écrire</button>`}</label>`;
+  $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+    <div class="modal"><div class="modal-head"><h3>Nouvelle conversation</h3>
+      <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="msg-tabs"><button class="active" data-t="direct">👤 Message direct</button><button data-t="groupe">👥 Groupe</button></div>
+        <input id="ncFiltre" placeholder="🔎 Rechercher un contact…">
+        <div id="ncGroupe" class="hidden"><label>Nom du groupe</label><input id="ncTitre" maxlength="120" placeholder="Ex : Équipe livraisons"></div>
+        <div class="msg-contacts" id="ncDirect">${contacts.map(u => ligne(u, false)).join('') || '<div class="hint">Aucun contact disponible.</div>'}</div>
+        <div class="msg-contacts hidden" id="ncMembres">${contacts.map(u => ligne(u, true)).join('')}</div>
+        <div class="actions hidden" id="ncActions"><button class="btn" id="ncCreer" style="width:auto">Créer le groupe</button></div>
+      </div></div></div>`;
+  const host = $('modalHost');
+  host.querySelectorAll('.msg-tabs button').forEach(b => b.onclick = () => {
+    host.querySelectorAll('.msg-tabs button').forEach(x => x.classList.toggle('active', x === b));
+    const g = b.dataset.t === 'groupe';
+    ['ncGroupe', 'ncMembres', 'ncActions'].forEach(i => $(i).classList.toggle('hidden', !g));
+    $('ncDirect').classList.toggle('hidden', g);
+  });
+  $('ncFiltre').oninput = () => {
+    const q = $('ncFiltre').value.trim().toLowerCase();
+    host.querySelectorAll('.msg-contact').forEach(x => x.classList.toggle('hidden', !!q && !x.dataset.q.includes(q)));
+  };
+  host.querySelectorAll('[data-uid]').forEach(b => b.onclick = async (e) => {
+    e.preventDefault();
+    try {
+      const conv = await api('/messagerie/conversations', { method: 'POST',
+        body: JSON.stringify({ type: 'direct', userId: Number(b.dataset.uid) }) });
+      document.querySelector('.modal-bg')?.remove();
+      majConversation(conv); ouvrirConversation(conv.id);
+    } catch (err) { toast(err.message, true); }
+  });
+  $('ncCreer').onclick = async () => {
+    const membres = [...host.querySelectorAll('#ncMembres input:checked')].map(i => Number(i.value));
+    try {
+      const conv = await api('/messagerie/conversations', { method: 'POST',
+        body: JSON.stringify({ type: 'groupe', titre: $('ncTitre').value, membres }) });
+      document.querySelector('.modal-bg')?.remove();
+      majConversation(conv); ouvrirConversation(conv.id);
+    } catch (err) { toast(err.message, true); }
+  };
+}
+
+async function ajouterMembresModal(conv) {
+  let contacts = [];
+  try { contacts = await api('/messagerie/contacts'); } catch (e) { return toast(e.message, true); }
+  const deja = new Set(conv.membres.map(m => m.id));
+  const dispo = contacts.filter(u => !deja.has(u.id));
+  $('modalHost').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)this.remove()">
+    <div class="modal"><div class="modal-head"><h3>Membres — ${esc(conv.titre)}</h3>
+      <button class="modal-x" onclick="document.querySelector('.modal-bg').remove()">✕</button></div>
+      <div class="modal-body">
+        <div class="hint">Membres actuels : ${conv.membres.map(m => esc(m.fullName)).join(', ')}</div>
+        <div class="msg-contacts" style="margin-top:10px">${dispo.map(u => `<label class="msg-contact"><input type="checkbox" value="${u.id}">
+          <span class="msg-avatar">${esc(initiales(u.fullName))}</span>
+          <span><b>${esc(u.fullName)}</b><small>${esc(ROLE_LABEL[u.role] || u.role)}${u.distributeur ? ' · ' + esc(u.distributeur) : ''}</small></span></label>`).join('')
+          || '<div class="hint">Tous vos contacts sont déjà membres.</div>'}</div>
+        <div class="actions"><button class="btn" id="amGo" style="width:auto">Ajouter</button></div>
+      </div></div></div>`;
+  $('amGo').onclick = async () => {
+    const userIds = [...$('modalHost').querySelectorAll('input:checked')].map(i => Number(i.value));
+    if (!userIds.length) return toast('Sélectionnez au moins un contact', true);
+    try {
+      const c = await api(`/messagerie/conversations/${conv.id}/membres`, { method: 'POST', body: JSON.stringify({ userIds }) });
+      document.querySelector('.modal-bg')?.remove();
+      majConversation(c); renderConvList(); renderThread(c);
+      toast('Membres ajoutés');
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+async function quitterGroupe(conv) {
+  if (!confirm(`Quitter le groupe « ${conv.titre} » ?`)) return;
+  try {
+    await api(`/messagerie/conversations/${conv.id}/membres/moi`, { method: 'DELETE' });
+    MSG.convs = MSG.convs.filter(c => c.id !== conv.id);
+    MSG.actif = null; pageMessagerie();
   } catch (e) { toast(e.message, true); }
 }
 
