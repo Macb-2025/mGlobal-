@@ -522,7 +522,11 @@ function connectWS() {
   try {
     const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(S.token)}`);
     S.ws = ws;
-    ws.onopen = () => { const d = $('wsDot'); if (d) d.classList.add('on'); };
+    ws.onopen = () => {
+      const d = $('wsDot'); if (d) d.classList.add('on');
+      if (S.wsReconnexion) resynchroniserMessagerie();
+      S.wsReconnexion = true;
+    };
     ws.onclose = () => { const d = $('wsDot'); if (d) d.classList.remove('on'); S.ws = null;
       if (S.token) setTimeout(connectWS, 4000); };
     ws.onmessage = (ev) => {
@@ -1672,6 +1676,15 @@ function msgJour(s) {
 const initiales = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map(x => x[0] || '').join('').toUpperCase() || '?';
 const convAutres = (c) => (c.membres || []).filter(m => m.id !== S.user.id);
 const convEnLigne = (c) => c.type === 'direct' && convAutres(c).some(m => m.enLigne);
+
+// Après une coupure WebSocket : récupère ce qui a été manqué.
+async function resynchroniserMessagerie() {
+  rafraichirNonLus();
+  if (S.page !== 'messagerie' || !$('msgList')) return;
+  try { MSG.convs = await api('/messagerie/conversations'); } catch { return; }
+  renderConvList();
+  if (MSG.actif) ouvrirConversation(MSG.actif);
+}
 
 async function rafraichirNonLus() {
   try {
