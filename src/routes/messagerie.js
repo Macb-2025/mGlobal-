@@ -203,8 +203,9 @@ r.post('/conversations/:id/membres', (req, res) => {
   const existants = actuels.map(utilisateurActif).filter(Boolean);
   if (!ids.length || users.some(u => !peutContacter(me, u)) || !groupeCompatible([...existants, ...nouveaux]))
     return res.status(403).json({ error: 'Participant non joignable' });
-  const add = db.prepare(`INSERT OR IGNORE INTO conversation_membres (conversation_id, user_id) VALUES (?, ?)`);
-  db.transaction(() => { for (const uid of ids) add.run(id, uid); })();
+  const add = db.prepare(`INSERT OR IGNORE INTO conversation_membres (conversation_id, user_id, dernier_lu_id)
+    VALUES (?, ?, (SELECT COALESCE(MAX(id), 0) FROM messages WHERE conversation_id = ?))`);
+  db.transaction(() => { for (const uid of ids) add.run(id, uid, id); })();
   notifierConversation(id);
   res.json(vueConversation(id, me.id));
 });
