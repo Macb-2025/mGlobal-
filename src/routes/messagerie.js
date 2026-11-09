@@ -11,6 +11,7 @@ import { emitToUsers, estEnLigne } from '../lib/realtime.js';
 // Messagerie interne : distributeurs (tous rôles), fournisseurs et super-admin.
 const r = Router();
 r.use(requireAuth, requireEspaceActif);
+r.use((req, res, next) => utilisateurActif(req.user.uid) ? next() : res.status(401).json({ error: 'Compte inactif' }));
 
 const MAX_MESSAGE = 4000;
 const moi = (req) => utilisateurActif(req.user.uid);
